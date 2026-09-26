@@ -23,7 +23,21 @@ import { buildSessionView } from "./jules/session-view.js";
 
 type Next = (err?: unknown) => void;
 
-export function jevGates(env: Record<string, string>): Plugin {
+const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const SESSION_ID_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
+const REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+function getHostname(hostHeader?: string): string {
+  if (!hostHeader) return "";
+  const host = hostHeader.trim().toLowerCase();
+  if (host.startsWith("[")) {
+    const closing = host.indexOf("]");
+    if (closing !== -1) return host.slice(1, closing);
+  }
+  return host.split(":")[0] ?? "";
+}
+
+export function jevGates(env: Record<string, string>, options?: { julesFetch?: typeof fetch }): Plugin {
   const jevKey = env.TYPESAFE_API_KEY?.trim();
   const jevMode = jevKey ? "live" : "stand-in";
 
@@ -42,14 +56,39 @@ export function jevGates(env: Record<string, string>): Plugin {
 
   let julesClient: JulesClient | undefined;
   const getJulesClient = () =>
-    (julesClient ??= new JulesClient(
-      julesKey
-        ? { apiKey: julesKey }
-        : { apiKey: "simulated", fetch: mockJules({ latencyMs: 120 }) as typeof fetch }
-    ));
+    (julesClient ??= new JulesClient({
+      apiKey: julesKey || "simulated",
+      fetch: options?.julesFetch ?? (julesKey ? globalThis.fetch : (mockJules({ latencyMs: 120 }) as typeof fetch)),
+    }));
 
   async function handle(req: IncomingMessage, res: ServerResponse, next: Next) {
     const rawPath = (req.url ?? "").split("?")[0] ?? "";
+
+    if (rawPath.startsWith("/api/gate") || rawPath.startsWith("/api/jules")) {
+      const hostHeader = (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ?? "";
+      // 1. Host check
+      const hostname = getHostname(hostHeader);
+      if (!allowLan && !ALLOWED_HOSTS.has(hostname)) {
+        return send(res, 403, { error: "Forbidden: Host not allowed." });
+      }
+
+      // 2. Origin check
+      const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+      if (origin && hostHeader) {
+        const expectedOrigin = `http://${hostHeader}`;
+        if (origin.toLowerCase() !== expectedOrigin.toLowerCase()) {
+          return send(res, 403, { error: "Forbidden: Invalid origin." });
+        }
+      }
+
+      // 3. Content-Type check on POST
+      if (req.method === "POST") {
+        const contentType = req.headers["content-type"] ?? "";
+        if (!contentType.includes("application/json")) {
+          return send(res, 415, { error: "Send JSON." });
+        }
+      }
+    }
 
     if (rawPath.startsWith("/api/gate")) {
       return handleGate(rawPath, req, res, next);
@@ -65,8 +104,6 @@ export function jevGates(env: Record<string, string>): Plugin {
   async function handleGate(path: string, req: IncomingMessage, res: ServerResponse, next: Next) {
     if (path !== "/api/gate" && !path.startsWith("/api/gate/")) return next();
 
-    if (!allowLan && !isLoopback(req)) return send(res, 403, { error: "The gates only answer this computer." });
-
     if (path === "/api/gate") {
       if (req.method !== "GET") return send(res, 405, { error: "Use GET here." });
       return send(res, 200, { mode: jevMode, gates: GATE_NAMES });
@@ -75,10 +112,6 @@ export function jevGates(env: Record<string, string>): Plugin {
     const name = path.slice("/api/gate/".length);
     if (!isGateName(name)) return send(res, 404, { error: `There's no gate called "${name}".` });
     if (req.method !== "POST") return send(res, 405, { error: "Use POST to run a gate." });
-
-    if (!(req.headers["content-type"] ?? "").includes("application/json")) {
-      return send(res, 415, { error: "Send JSON." });
-    }
 
     let body: GateRequest;
     try {
@@ -99,15 +132,24 @@ export function jevGates(env: Record<string, string>): Plugin {
   async function handleJules(path: string, req: IncomingMessage, res: ServerResponse, next: Next) {
     if (path !== "/api/jules" && !path.startsWith("/api/jules/")) return next();
 
-    if (!allowLan && !isLoopback(req)) return send(res, 403, { error: "Jules only answers this computer." });
-
     const client = getJulesClient();
 
     // GET /api/jules
     if (path === "/api/jules") {
       if (req.method !== "GET") return send(res, 405, { error: "Use GET here." });
-      let repos: string[] = [];
-      return send(res, 200, { mode: julesMode, repos });
+      if (julesMode === "live") {
+        try {
+          const repos = await client.listSources();
+          return send(res, 200, { mode: julesMode, repos });
+        } catch (err: unknown) {
+          return send(res, 200, {
+            mode: julesMode,
+            repos: [],
+            error: err instanceof Error ? err.message : "Failed to list repos",
+          });
+        }
+      }
+      return send(res, 200, { mode: julesMode, repos: [] });
     }
 
     const subPath = path.slice("/api/jules/".length);
@@ -115,9 +157,6 @@ export function jevGates(env: Record<string, string>): Plugin {
     // POST /api/jules/dispatch
     if (subPath === "dispatch") {
       if (req.method !== "POST") return send(res, 405, { error: "Use POST here." });
-      if (!(req.headers["content-type"] ?? "").includes("application/json")) {
-        return send(res, 415, { error: "Send JSON." });
-      }
 
       let body: any;
       try {
@@ -131,11 +170,12 @@ export function jevGates(env: Record<string, string>): Plugin {
         return send(res, 400, { error: "Send a tile with a title." });
       }
 
-      const repoStr = project?.repo || "your-org/harness";
-      const [owner, repo] = repoStr.split("/");
-      if (!owner || !repo) {
-        return send(res, 400, { error: "Invalid repository configuration." });
+      const repoStr = (project?.repo ?? "").trim();
+      if (!repoStr || repoStr === "your-org/harness" || !REPO_REGEX.test(repoStr)) {
+        return send(res, 400, { error: "Set this project's repo in src/data/initialData.js." });
       }
+
+      const [owner, repo] = repoStr.split("/");
 
       let sourceName = `sources/github/${owner}/${repo}`;
       try {
@@ -143,7 +183,7 @@ export function jevGates(env: Record<string, string>): Plugin {
         if (sourceRes.name) sourceName = sourceRes.name;
       } catch (err: unknown) {
         return send(res, 400, {
-          error: err instanceof Error ? err.message : "repo not connected to Jules",
+          error: err instanceof Error ? err.message : "repo not connected to Jules (install the Jules GitHub app on it)",
         });
       }
 
@@ -154,7 +194,7 @@ export function jevGates(env: Record<string, string>): Plugin {
       if (Array.isArray(tile.subtasks) && tile.subtasks.length > 0) {
         prompt += `Acceptance Criteria:\n` + tile.subtasks.map((st: string) => `- [ ] ${st}`).join("\n") + "\n";
       }
-      prompt += `Work on a branch, run the tests, and open a pull request.`;
+      prompt += `Work on a branch, run the tests, and open a pull request. Don't deploy anything, and don't use MCP tools such as Render or Stitch.`;
 
       const startingBranch = project?.branch || "main";
 
@@ -181,18 +221,21 @@ export function jevGates(env: Record<string, string>): Plugin {
     const id = parts[0];
     const action = parts[1];
 
-    if (!id) return send(res, 404, { error: "Session ID required" });
+    if (!id || !SESSION_ID_REGEX.test(id)) {
+      return send(res, 400, { error: "Invalid session ID format" });
+    }
 
     // GET /api/jules/:id
     if (!action) {
       if (req.method !== "GET") return send(res, 405, { error: "Use GET here." });
       try {
         const session = await client.getSession(id);
-        const actRes = await client.listActivities(id);
-        const view = buildSessionView(session, actRes.activities ?? []);
+        const { activities, capped } = await client.listAllActivities(id);
+        const view = buildSessionView(session, activities, capped);
         return send(res, 200, view);
       } catch (err: unknown) {
-        return send(res, 500, {
+        const status = err instanceof Error && err.message === "Jules session not found" ? 404 : 500;
+        return send(res, status, {
           error: err instanceof Error ? err.message : "Failed to fetch Jules session",
         });
       }
@@ -214,9 +257,6 @@ export function jevGates(env: Record<string, string>): Plugin {
     // POST /api/jules/:id/message
     if (action === "message") {
       if (req.method !== "POST") return send(res, 405, { error: "Use POST here." });
-      if (!(req.headers["content-type"] ?? "").includes("application/json")) {
-        return send(res, 415, { error: "Send JSON." });
-      }
 
       let body: any;
       try {
@@ -254,9 +294,6 @@ export function jevGates(env: Record<string, string>): Plugin {
     configurePreviewServer: mount,
   };
 }
-
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-const isLoopback = (req: IncomingMessage) => LOOPBACK.has(req.socket.remoteAddress ?? "");
 
 function send(res: ServerResponse, status: number, data: unknown) {
   res.statusCode = status;

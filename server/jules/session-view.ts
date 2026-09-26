@@ -16,12 +16,40 @@ export interface SessionView {
     testsPassed?: boolean;
   };
   needsYou: string | null;
+  newestActivityName?: string;
+  capped?: boolean;
 }
 
-export function buildSessionView(session: Session, activities: Activity[] = []): SessionView {
+export function isTestRunnerCommand(cmd: string): boolean {
+  if (!cmd) return false;
+  const lower = cmd.trim().toLowerCase();
+
+  // Must match one of the exact test suite runners:
+  // - npm test and npm run test
+  // - pnpm test and yarn test (including pnpm/yarn run test)
+  // - node --test and tsx --test
+  // - vitest, jest and pytest
+  if (/\b(npm|pnpm|yarn)\s+(run\s+)?test\b/.test(lower)) return true;
+  if (/\bnode\s+--test\b/.test(lower)) return true;
+  if (/\btsx\s+--test\b/.test(lower)) return true;
+  if (/\bvitest\b/.test(lower)) return true;
+  if (/\bjest\b/.test(lower)) return true;
+  if (/\bpytest\b/.test(lower)) return true;
+
+  return false;
+}
+
+export function buildSessionView(session: Session, activities: Activity[] = [], capped: boolean = false): SessionView {
+  // Sort activities by createTime ascending so newest is last
+  const sortedActivities = [...activities].sort((a, b) => {
+    const tA = a.createTime ? new Date(a.createTime).getTime() : 0;
+    const tB = b.createTime ? new Date(b.createTime).getTime() : 0;
+    return tA - tB;
+  });
+
   // 1. Extract plan step titles
   let planSteps: string[] = [];
-  for (const act of activities) {
+  for (const act of sortedActivities) {
     if (act.planGenerated?.plan?.steps) {
       planSteps = act.planGenerated.plan.steps
         .map((s) => s.title?.trim())
@@ -34,16 +62,15 @@ export function buildSessionView(session: Session, activities: Activity[] = []):
   if (session.state === "COMPLETED") {
     progress = 100;
   } else if (planSteps.length > 0) {
-    // Count activities with progressUpdated
-    const progressUpdates = activities.filter((a) => Boolean(a.progressUpdated));
+    const progressUpdates = sortedActivities.filter((a) => Boolean(a.progressUpdated));
     const count = progressUpdates.length;
     progress = Math.min(95, Math.round((count / planSteps.length) * 95));
   }
 
   // 3. Last step (newest progressUpdated title & description)
   let lastStep: { title?: string; description?: string } | undefined;
-  for (let i = activities.length - 1; i >= 0; i--) {
-    const act = activities[i];
+  for (let i = sortedActivities.length - 1; i >= 0; i--) {
+    const act = sortedActivities[i];
     if (act?.progressUpdated) {
       lastStep = {
         title: act.progressUpdated.title,
@@ -69,8 +96,8 @@ export function buildSessionView(session: Session, activities: Activity[] = []):
   }
 
   let lastAgentMessage: string | undefined;
-  for (let i = activities.length - 1; i >= 0; i--) {
-    const msg = activities[i]?.agentMessaged?.agentMessage;
+  for (let i = sortedActivities.length - 1; i >= 0; i--) {
+    const msg = sortedActivities[i]?.agentMessaged?.agentMessage;
     if (msg) {
       lastAgentMessage = msg;
       break;
@@ -81,13 +108,12 @@ export function buildSessionView(session: Session, activities: Activity[] = []):
 
   // Newest test command bashOutput
   let testsPassed: boolean | undefined;
-  for (let i = activities.length - 1; i >= 0; i--) {
-    const artifacts = activities[i]?.artifacts;
+  for (let i = sortedActivities.length - 1; i >= 0; i--) {
+    const artifacts = sortedActivities[i]?.artifacts;
     if (artifacts) {
       for (const art of artifacts) {
         if (art.bashOutput?.command) {
-          const cmd = art.bashOutput.command.toLowerCase();
-          if (cmd.includes("test") || cmd.includes("check")) {
+          if (isTestRunnerCommand(art.bashOutput.command)) {
             testsPassed = art.bashOutput.exitCode === 0;
             break;
           }
@@ -105,14 +131,17 @@ export function buildSessionView(session: Session, activities: Activity[] = []):
     needsYou = lastAgentMessage || "Awaiting user feedback";
   } else if (session.state === "FAILED") {
     let failureReason: string | undefined;
-    for (let i = activities.length - 1; i >= 0; i--) {
-      if (activities[i]?.sessionFailed?.reason) {
-        failureReason = activities[i]?.sessionFailed?.reason;
+    for (let i = sortedActivities.length - 1; i >= 0; i--) {
+      if (sortedActivities[i]?.sessionFailed?.reason) {
+        failureReason = sortedActivities[i]?.sessionFailed?.reason;
         break;
       }
     }
     needsYou = failureReason || "Session failed";
   }
+
+  // Newest activity name
+  const newestActivityName = sortedActivities.length > 0 ? sortedActivities[sortedActivities.length - 1]?.name : undefined;
 
   return {
     id: session.id,
@@ -127,5 +156,7 @@ export function buildSessionView(session: Session, activities: Activity[] = []):
       testsPassed,
     },
     needsYou,
+    newestActivityName,
+    capped,
   };
 }

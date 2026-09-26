@@ -1,11 +1,11 @@
-import type { Session, Activity } from "./client.js";
+import type { Session, Activity, Source } from "./client.js";
 
 export interface MockJulesOptions {
-  /** Array of "owner/repo" strings considered connected. */
+  /** Repositories connected to Jules, as "owner/repo". */
   connectedRepos?: string[];
-  /** Pre-seeded or dynamic sessions by ID. */
+  /** Pre-existing sessions by id. */
   sessions?: Record<string, { session: Session; activities: Activity[] }>;
-  /** Status to respond with (e.g. 401, 404, 500). */
+  /** Force an HTTP error status code for every call. */
   status?: number;
   /** Latency in ms. */
   latencyMs?: number;
@@ -47,6 +47,14 @@ export function mockJules(options: MockJulesOptions = {}) {
 
     const path = url.pathname.replace(/^\/v1alpha\//, "").replace(/^\//, "");
 
+    // GET sources
+    if (method === "GET" && path === "sources") {
+      const sources: Source[] = Array.from(connected).map((repo) => ({
+        name: `sources/github/${repo}`,
+      }));
+      return json({ sources });
+    }
+
     // GET sources/github/:owner/:repo
     if (method === "GET" && path.startsWith("sources/github/")) {
       const parts = path.split("/");
@@ -56,7 +64,7 @@ export function mockJules(options: MockJulesOptions = {}) {
       if (connected.has(key)) {
         return json({ name: `sources/github/${key}` });
       }
-      return json({ error: { message: "repo not connected to Jules" } }, 404);
+      return json({ error: { message: "repo not connected to Jules (install the Jules GitHub app on it)" } }, 404);
     }
 
     // POST sessions
@@ -90,7 +98,7 @@ export function mockJules(options: MockJulesOptions = {}) {
     if (method === "GET" && path.startsWith("sessions/") && !path.includes("/activities")) {
       const id = path.split("/")[1] ?? "";
       const found = sessions.get(id);
-      if (!found) return json({ error: { message: "session not found" } }, 404);
+      if (!found) return json({ error: { message: "Jules session not found" } }, 404);
       return json(found.session);
     }
 
@@ -98,8 +106,23 @@ export function mockJules(options: MockJulesOptions = {}) {
     if (method === "GET" && path.startsWith("sessions/") && path.includes("/activities")) {
       const id = path.split("/")[1] ?? "";
       const found = sessions.get(id);
-      if (!found) return json({ error: { message: "session not found" } }, 404);
-      return json({ activities: found.activities });
+      if (!found) return json({ error: { message: "Jules session not found" } }, 404);
+
+      const pageToken = url.searchParams.get("pageToken");
+      const pageSize = parseInt(url.searchParams.get("pageSize") || "30", 10);
+      const allActs = found.activities;
+
+      let start = 0;
+      if (pageToken) {
+        start = parseInt(pageToken.replace("token-", ""), 10);
+        if (isNaN(start)) start = 0;
+      }
+
+      const end = start + pageSize;
+      const sliced = allActs.slice(start, end);
+      const nextPageToken = end < allActs.length ? `token-${end}` : undefined;
+
+      return json({ activities: sliced, nextPageToken });
     }
 
     // POST sessions/:id:approvePlan
@@ -107,7 +130,7 @@ export function mockJules(options: MockJulesOptions = {}) {
       const idSegment = path.split("/")[1] ?? "";
       const id = idSegment.split(":")[0] ?? "";
       const found = sessions.get(id);
-      if (!found) return json({ error: { message: "session not found" } }, 404);
+      if (!found) return json({ error: { message: "Jules session not found" } }, 404);
 
       found.session.state = "IN_PROGRESS";
       found.activities.push({
@@ -123,7 +146,7 @@ export function mockJules(options: MockJulesOptions = {}) {
       const idSegment = path.split("/")[1] ?? "";
       const id = idSegment.split(":")[0] ?? "";
       const found = sessions.get(id);
-      if (!found) return json({ error: { message: "session not found" } }, 404);
+      if (!found) return json({ error: { message: "Jules session not found" } }, 404);
 
       const reqBody = body as any;
       found.activities.push({

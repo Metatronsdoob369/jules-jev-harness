@@ -1,11 +1,5 @@
 import React, { useState } from 'react';
-import {
-  INITIAL_PROJECTS,
-  INITIAL_LM_MODELS,
-  INITIAL_TASKS,
-  INITIAL_CHECKPOINTS
-} from './data/initialData';
-
+import { INITIAL_TASKS, INITIAL_PROJECTS, INITIAL_LM_MODELS, INITIAL_CHECKPOINTS } from './data/initialData';
 import KanbanCanvas3D from './components/KanbanCanvas3D';
 import KanbanBoard2D from './components/KanbanBoard2D';
 import OrchestrationHub from './components/OrchestrationHub';
@@ -239,6 +233,7 @@ export default function App() {
           onClose={() => setSelectedTask(null)}
           onUpdateProgress={handleUpdateTaskProgress}
           onMoveTask={handleMoveTask}
+          onPatchTask={handlePatchTask}
         />
       </div>
 

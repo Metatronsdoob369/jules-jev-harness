@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Cpu, Play, Pause, Zap, GitBranch, ShieldCheck, Check, X } from 'lucide-react';
 import { executeGate, gateStatus } from '../gates/gates.js';
+import { evalLiveStep, evalRiskyGate } from '../jules/live-step.js';
 
 const MODE_LABEL = { live: 'JEV LIVE', 'stand-in': 'JEV STAND-IN', offline: 'GATES OFFLINE' };
 const MODE_STYLE = {
@@ -28,7 +29,15 @@ export default function OrchestrationHub({
   const [approval, setApproval] = useState(null); // { tile, verdict, question, kind, extra }
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDoneWhen, setNewTaskDoneWhen] = useState('');
-  const busy = useRef(false);
+
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const isPollingRef = useRef(false);
+  const consecutiveFailuresRef = useRef({});
+  const approvalRef = useRef(approval);
+  approvalRef.current = approval;
 
   // ── Fetch Jules status ─────────────────────────────────────────────────────
 
@@ -44,11 +53,11 @@ export default function OrchestrationHub({
   // ── Talking to the gates ───────────────────────────────────────────────────
 
   function context(tile, extra = {}) {
-    const project = projects.find((p) => p.id === tile.projectId);
+    const project = projectsRef.current.find((p) => p.id === tile.projectId);
     return {
       tile: { id: tile.id, title: tile.title, description: tile.description, subtasks: tile.subtasks },
       project: project && { name: project.name, repo: project.repo },
-      projects: projects.map((p) => ({ name: p.name })),
+      projects: projectsRef.current.map((p) => ({ name: p.name })),
       ...extra
     };
   }
@@ -72,14 +81,9 @@ export default function OrchestrationHub({
     setLogs((prev) => [entry, ...prev].slice(0, 30));
   }
 
-  // A verdict that isn't "act" waits for you.
-  function hold(tile, v) {
-    onPatchTask(tile.id, { needsYou: v.reason });
-  }
-
-  function ask(tile, v, question, options = {}) {
-    onPatchTask(tile.id, { needsYou: question });
-    setApproval({ tile, verdict: v, question, ...options });
+  function ask(tile, v, questionText, options = {}) {
+    onPatchTask(tile.id, { needsYou: questionText });
+    setApproval({ tile, verdict: v, question: questionText, ...options });
     setIsExecuting(false);
   }
 
@@ -87,7 +91,7 @@ export default function OrchestrationHub({
   useEffect(() => {
     gateStatus().then((status) => {
       setMode(status.mode);
-      if (announced.current) return; // React dev mode runs effects twice
+      if (announced.current) return;
       announced.current = true;
       log(
         'note',
@@ -104,113 +108,65 @@ export default function OrchestrationHub({
     if (julesMode !== 'live') return;
 
     const interval = setInterval(async () => {
-      const liveTasks = tasks.filter((t) => t.sessionId && t.column === 'IN_PROGRESS');
-      for (const tile of liveTasks) {
-        try {
-          const res = await fetch(`/api/jules/${tile.sessionId}`);
-          if (!res.ok) continue;
-          const sView = await res.json();
+      if (isPollingRef.current) return; // Skip if previous poll still running
+      isPollingRef.current = true;
 
-          const prevProgress = tile.progress ?? 0;
-          const newProgress = sView.progress ?? prevProgress;
-          const prevLastStepTitle = tile.lastStep?.title;
-          const newLastStepTitle = sView.lastStep?.title;
+      try {
+        const currentTasks = tasksRef.current;
+        const liveTasks = currentTasks.filter(
+          (t) => t.sessionId && t.column !== 'DONE' && !t.handledCompleted && t.needsYou !== 'Session failed'
+        );
 
-          // Update tile state
-          onPatchTask(tile.id, {
-            progress: newProgress,
-            plan: sView.plan,
-            lastStep: sView.lastStep,
-            report: sView.report,
-            needsYou: sView.needsYou ?? tile.needsYou,
-          });
-
-          // Rule 2 & 5: Checkpoints window gate check when progress updates
-          if (
-            tile.checkpointActive &&
-            newLastStepTitle &&
-            newLastStepTitle !== prevLastStepTitle &&
-            sView.state !== 'COMPLETED'
-          ) {
-            const v = await gate('window', tile, {
-              atWindow: true,
-              lastStep: `${sView.lastStep.title}: ${sView.lastStep.description || ''}`,
-            });
-
-            if (v.action === 'open') {
-              // Open the Jules session so the person can review it, and log manual review
-              if (sView.url) {
-                window.open(sView.url, '_blank');
+        for (const tile of liveTasks) {
+          try {
+            const res = await fetch(`/api/jules/${tile.sessionId}`);
+            if (!res.ok) {
+              const fails = (consecutiveFailuresRef.current[tile.sessionId] || 0) + 1;
+              consecutiveFailuresRef.current[tile.sessionId] = fails;
+              if (fails >= 2) {
+                let errText = 'Failed to poll session state';
+                try {
+                  const body = await res.json();
+                  if (body?.error) errText = body.error;
+                } catch {}
+                onPatchTask(tile.id, { needsYou: errText });
               }
-              log('note', `Window gate on ${tile.id}: opened Jules session for manual review.`);
+              continue;
             }
-          }
 
-          // State: AWAITING_PLAN_APPROVAL
-          if (sView.state === 'AWAITING_PLAN_APPROVAL' && !approval) {
-            ask(
-              tile,
-              { gate: 'jules_plan', action: 'approve_plan', verdict: 'confirm', reason: 'Awaiting plan approval' },
-              `Approve Jules plan for ${tile.id}?`,
-              { kind: 'jules_plan', sessionView: sView }
-            );
-          }
+            consecutiveFailuresRef.current[tile.sessionId] = 0;
+            const sessionView = await res.json();
 
-          // State: AWAITING_USER_FEEDBACK
-          if (sView.state === 'AWAITING_USER_FEEDBACK' && !approval) {
-            ask(
-              tile,
-              { gate: 'jules_feedback', action: 'user_feedback', verdict: 'confirm', reason: sView.needsYou },
-              `Jules feedback for ${tile.id}: ${sView.needsYou}`,
-              { kind: 'jules_feedback', sessionView: sView }
-            );
-          }
+            const runGateFn = async (name, extra) => gate(name, tile, extra);
+            const { patch, question } = await evalLiveStep(tile, sessionView, runGateFn);
 
-          // State: FAILED
-          if (sView.state === 'FAILED') {
-            onPatchTask(tile.id, { needsYou: sView.needsYou || 'Session failed' });
-          }
+            if (Object.keys(patch).length > 0) {
+              onPatchTask(tile.id, patch);
+            }
 
-          // State: COMPLETED
-          if (sView.state === 'COMPLETED' && tile.column === 'IN_PROGRESS') {
-            const v = await gate('done', tile, { report: sView.report });
-            if (v.action === 'done') {
-              // Run risky gate before merging / marking done
-              const project = projects.find((p) => p.id === tile.projectId);
-              const riskyV = await gate('risky', tile, {
-                pending: { kind: 'merge', detail: `Merge ${sView.report.prUrl}` },
-                project,
-              });
-
-              if (riskyV.action === 'ask' || riskyV.verdict === 'confirm') {
-                ask(
-                  tile,
-                  riskyV,
-                  `Open pull request for ${tile.id}? (${sView.report.prUrl})`,
-                  { kind: 'jules_pr', prUrl: sView.report.prUrl }
-                );
-              } else if (riskyV.verdict === 'act') {
-                if (sView.report.prUrl) window.open(sView.report.prUrl, '_blank');
-                onMoveTask(tile.id, 'REVIEW');
-              }
-            } else if (v.action === 'send_back') {
-              const missingStr = v.reason || 'Missing items';
+            if (question && !approvalRef.current) {
               ask(
                 tile,
-                v,
-                `Ask Jules to finish: ${missingStr}?`,
-                { kind: 'jules_done_retry', missingItems: missingStr }
+                { gate: 'jules', action: question.kind, verdict: 'confirm', reason: question.text },
+                question.text,
+                question
               );
             }
+          } catch (e) {
+            const fails = (consecutiveFailuresRef.current[tile.sessionId] || 0) + 1;
+            consecutiveFailuresRef.current[tile.sessionId] = fails;
+            if (fails >= 2) {
+              onPatchTask(tile.id, { needsYou: 'Failed to poll session state' });
+            }
           }
-        } catch (e) {
-          // fetch error during polling
         }
+      } finally {
+        isPollingRef.current = false;
       }
-    }, 10000); // 10 seconds polling
+    }, 10000);
 
     return () => clearInterval(interval);
-  }, [julesMode, tasks, projects, approval]);
+  }, [julesMode]);
 
   // ── The loop: simulated agents or live dispatches ───────────────────────────
 
@@ -218,149 +174,179 @@ export default function OrchestrationHub({
     if (!isExecuting || approval) return;
 
     const interval = setInterval(async () => {
-      if (busy.current) return;
-      busy.current = true;
-      try {
-        const workingSimulated = tasks.filter((t) => t.column === 'IN_PROGRESS' && !t.needsYou && !t.sessionId);
-        if (workingSimulated.length > 0) {
-          await advanceSimulated(workingSimulated[Math.floor(Math.random() * workingSimulated.length)]);
-          return;
-        }
-        const next = tasks.find((t) => t.column === 'BACKLOG' && !t.needsYou);
-        if (next) await dispatch(next);
-      } finally {
-        busy.current = false;
+      const currentTasks = tasksRef.current;
+      const unrouted = currentTasks.filter((t) => t.column === 'BACKLOG' && !t.needsYou);
+      if (unrouted.length === 0) return;
+
+      const tile = unrouted[0];
+
+      // Route gate
+      const v = await gate('route', tile);
+      if (v.verdict === 'act') {
+        startSimulated(tile, v.action);
+      } else if (v.verdict === 'confirm') {
+        askRouting(tile, v);
+      } else {
+        onPatchTask(tile.id, { needsYou: v.reason });
       }
     }, 2800);
 
     return () => clearInterval(interval);
-  }, [isExecuting, approval, tasks, projects, julesMode]);
+  }, [isExecuting, approval, julesMode]);
 
-  // BACKLOG → IN_PROGRESS goes through the route gate.
-  async function dispatch(tile) {
-    const v = await gate('route', tile);
-    const takes = v.action === 'jules' || v.action === 'writer';
-    if (!takes) {
-      hold(tile, v);
-      return;
-    }
-
-    if (v.action === 'writer') {
-      // Writer model route stays simulated, tile indicates so
-      if (v.verdict === 'act') startSimulated(tile, 'writer');
-      else if (v.verdict === 'confirm') ask(tile, v, `Send ${tile.id} to Writer model (Simulated)?`, { kind: 'start_writer' });
-      else hold(tile, v);
-      return;
-    }
-
+  function askRouting(tile, v) {
     if (v.action === 'jules') {
       if (julesMode === 'live') {
-        // Every real dispatch asks the person first
+        const project = projectsRef.current.find((p) => p.id === tile.projectId);
+        const repoStr = (project?.repo ?? '').trim();
+        if (!repoStr || repoStr === 'your-org/harness') {
+          onPatchTask(tile.id, { needsYou: "Set this project's repo in src/data/initialData.js." });
+          log('act', `Dispatch refused for ${tile.id}: project repo not set or placeholder.`);
+          return;
+        }
         ask(tile, v, `Start a Jules session for ${tile.id}?`, { kind: 'dispatch_jules' });
       } else {
-        if (v.verdict === 'act') startSimulated(tile, 'jules');
-        else if (v.verdict === 'confirm') ask(tile, v, `Send ${tile.id} to Jules (Simulated)?`, { kind: 'start_simulated_jules' });
-        else hold(tile, v);
+        ask(tile, v, `Send ${tile.id} to Jules (Simulated)?`, { kind: 'start_simulated_jules' });
       }
+    } else {
+      ask(tile, v, `Send ${tile.id} to Writer model (Simulated)?`, { kind: 'start_simulated_writer' });
     }
   }
 
-  async function startRealJules(tile) {
-    const project = projects.find((p) => p.id === tile.projectId);
+  async function dispatchJules(tile) {
+    const project = projectsRef.current.find((p) => p.id === tile.projectId);
+    log('note', `Dispatching ${tile.id} to Jules...`);
     try {
       const res = await fetch('/api/jules/dispatch', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tile, project }),
       });
-      const data = await res.json();
       if (!res.ok) {
-        onPatchTask(tile.id, { needsYou: data.error || 'Failed to start Jules session' });
+        let errMessage = 'Dispatch failed';
+        try {
+          const body = await res.json();
+          if (body?.error) errMessage = body.error;
+        } catch {}
+        onPatchTask(tile.id, { needsYou: errMessage });
+        log('act', `Dispatch failed for ${tile.id}: ${errMessage}`);
         return;
       }
-
+      const data = await res.json();
       onPatchTask(tile.id, {
-        assignee: 'Jules',
         sessionId: data.sessionId,
         sessionUrl: data.url,
+        assignee: 'Jules (Live)',
         needsYou: null,
       });
       onMoveTask(tile.id, 'IN_PROGRESS');
-      log('act', `Dispatched ${tile.id} to real Jules session (${data.sessionId}).`);
+      log('act', `Dispatched ${tile.id} -> session ${data.sessionId}`);
     } catch (err) {
-      onPatchTask(tile.id, { needsYou: 'Failed to dispatch Jules session' });
+      onPatchTask(tile.id, { needsYou: 'Failed to contact Jules API' });
+      log('act', `Dispatch error for ${tile.id}: ${err instanceof Error ? err.message : 'Error'}`);
     }
   }
 
   function startSimulated(tile, owner) {
-    onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules (Simulated)' : 'Writer model (Simulated)' });
     onMoveTask(tile.id, 'IN_PROGRESS');
+    onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules (Simulated)' : 'Writer model (Simulated)' });
+    log('act', `Routed ${tile.id} to ${owner} (simulated).`);
   }
 
-  async function advanceSimulated(tile) {
-    const steps = Math.max(1, tile.subtasks?.length ?? 1);
-    const from = tile.progress ?? 0;
-    const to = Math.min(100, from + 10 + Math.floor(Math.random() * 20));
-    const finished = (p) => Math.floor((p / 100) * steps);
-    onUpdateTaskProgress(tile.id, to);
-
-    // Finishing a plan step opens a window, if this tile has checkpoints.
-    if (tile.checkpointActive && to < 100 && finished(to) > finished(from)) {
-      const step = tile.subtasks[finished(to) - 1];
-      const v = await gate('window', tile, { atWindow: true, lastStep: `Finished: ${step}` });
-      if (v.action === 'open' && v.verdict !== 'escalate') {
-        return ask(tile, v, `Bring in a ${v.details?.role ?? 'reviewer'} on ${tile.id} now?`, { kind: 'simulated_window' });
-      }
-      if (v.verdict === 'escalate') hold(tile, v);
-      return;
-    }
-
-    if (to >= 100) {
-      const report = {
-        summary: `Completed: ${(tile.subtasks ?? []).join('; ')}.`,
-        prUrl: `sim://${tile.id}`, // simulated agents open simulated PRs
-        testsPassed: true
-      };
-      const v = await gate('done', tile, { report });
-      if (v.action === 'done' && v.verdict === 'act') return onMoveTask(tile.id, 'REVIEW');
-      if (v.action === 'done' && v.verdict === 'confirm') return ask(tile, v, `Mark ${tile.id} done?`, { kind: 'simulated_done' });
-      if (v.action === 'send_back' && v.verdict === 'act') return sendBack(tile);
-      hold(tile, v);
-    }
-  }
-
-  function sendBack(tile) {
-    const steps = Math.max(1, tile.subtasks?.length ?? 1);
-    onUpdateTaskProgress(tile.id, Math.round((100 * (steps - 1)) / steps));
-  }
-
-  // Your yes or no on an approval question
   async function answer(yes) {
-    const { tile, verdict, kind, prUrl, missingItems } = approval;
-    onPatchTask(tile.id, { needsYou: null });
+    const { tile, verdict, kind, missingItems, prUrl, url, report, stateKey } = approval;
     setApproval(null);
 
     if (kind === 'dispatch_jules') {
       if (yes) {
-        await startRealJules(tile);
+        await dispatchJules(tile);
       } else {
-        onPatchTask(tile.id, { needsYou: 'Jules dispatch declined' });
+        onPatchTask(tile.id, { needsYou: 'Dispatch declined' });
       }
+    } else if (kind === 'start_simulated_jules') {
+      if (yes) startSimulated(tile, 'jules');
+      else onPatchTask(tile.id, { needsYou: 'Routing declined' });
+    } else if (kind === 'start_simulated_writer') {
+      if (yes) startSimulated(tile, 'writer');
+      else onPatchTask(tile.id, { needsYou: 'Routing declined' });
     } else if (kind === 'jules_plan') {
-      if (yes && tile.sessionId) {
-        await fetch(`/api/jules/${tile.sessionId}/approve`, { method: 'POST' });
-        log('act', `Approved Jules plan for ${tile.id}.`);
+      if (yes) {
+        try {
+          const res = await fetch(`/api/jules/${tile.sessionId}/approve`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          if (res.ok) {
+            onPatchTask(tile.id, { needsYou: null });
+            log('act', `Approved Jules plan for ${tile.id}.`);
+          } else {
+            let errText = 'Failed to approve plan';
+            try {
+              const b = await res.json();
+              if (b?.error) errText = b.error;
+            } catch {}
+            onPatchTask(tile.id, { needsYou: errText });
+            log('act', `Approve plan failed for ${tile.id}: ${errText}`);
+          }
+        } catch (e) {
+          onPatchTask(tile.id, { needsYou: 'Network error approving plan' });
+        }
       } else {
-        onPatchTask(tile.id, { needsYou: 'Plan approval declined' });
+        onPatchTask(tile.id, { needsYou: 'Plan feedback required' });
+        log('act', `Declined plan for ${tile.id}: offer feedback in drawer.`);
+      }
+    } else if (kind === 'jules_window_open') {
+      if (yes) {
+        if (url) window.open(url, '_blank');
+        log('note', `Opened Jules session for ${tile.id} for manual review.`);
+      } else {
+        log('note', `Window review declined for ${tile.id}.`);
+      }
+    } else if (kind === 'jules_done_confirm') {
+      if (yes) {
+        const runGateFn = async (name, extra) => gate(name, tile, extra);
+        const { patch, question } = await evalRiskyGate(
+          tile,
+          { report, sessionUrl: tile.sessionUrl },
+          runGateFn,
+          stateKey
+        );
+        onPatchTask(tile.id, patch);
+        if (question) {
+          ask(
+            tile,
+            { gate: 'risky', action: question.kind, verdict: 'confirm', reason: question.text },
+            question.text,
+            question
+          );
+        }
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Marking done declined' });
       }
     } else if (kind === 'jules_done_retry') {
-      if (yes && tile.sessionId) {
-        await fetch(`/api/jules/${tile.sessionId}/message`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ prompt: `Please finish missing items: ${missingItems}` }),
-        });
-        log('act', `Asked Jules to finish missing items on ${tile.id}.`);
+      if (yes) {
+        try {
+          const res = await fetch(`/api/jules/${tile.sessionId}/message`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ prompt: missingItems }),
+          });
+          if (res.ok) {
+            onPatchTask(tile.id, { needsYou: null });
+            log('act', `Asked Jules to finish missing items on ${tile.id}.`);
+          } else {
+            let errText = 'Failed to send message';
+            try {
+              const b = await res.json();
+              if (b?.error) errText = b.error;
+            } catch {}
+            onPatchTask(tile.id, { needsYou: errText });
+            log('act', `Send message failed for ${tile.id}: ${errText}`);
+          }
+        } catch (e) {
+          onPatchTask(tile.id, { needsYou: 'Network error sending message' });
+        }
       } else {
         onPatchTask(tile.id, { needsYou: 'Retry declined' });
       }
@@ -368,12 +354,12 @@ export default function OrchestrationHub({
       if (yes) {
         if (prUrl) window.open(prUrl, '_blank');
         onMoveTask(tile.id, 'REVIEW');
+        onPatchTask(tile.id, { handledCompleted: true, needsYou: null });
         log('act', `Opened PR ${prUrl} for ${tile.id}.`);
       } else {
         onPatchTask(tile.id, { needsYou: 'PR opening declined' });
       }
     } else {
-      // General verdict handlers
       if (verdict?.gate === 'route') {
         if (yes) startSimulated(tile, verdict.action);
         else onPatchTask(tile.id, { needsYou: 'Routing declined: assign it by hand' });
@@ -393,7 +379,6 @@ export default function OrchestrationHub({
     setIsExecuting(true);
   }
 
-  // New tasks go through the intake gate, which also picks their project.
   const handleCreateQuickTask = async (e) => {
     e.preventDefault();
     const title = newTaskTitle.trim();
@@ -468,7 +453,9 @@ export default function OrchestrationHub({
             <ShieldCheck className="w-4 h-4 text-optic-cyan" />
             <span className="font-bold text-slate-100">YOUR CALL:</span>
             <span className="text-slate-200">{approval.question}</span>
-            <span className="text-slate-400 text-[10px]">({approval.verdict.reason})</span>
+            {approval.verdict?.reason && (
+              <span className="text-slate-400 text-[10px]">({approval.verdict.reason})</span>
+            )}
           </div>
           <div className="flex items-center space-x-1.5">
             <button

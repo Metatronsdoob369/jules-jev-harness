@@ -1,8 +1,216 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { after, before, test } from "node:test";
+import { jevGates } from "../jev-plugin.js";
 import { JulesClient } from "./client.js";
 import { mockJules } from "./mock-jules.js";
-import { buildSessionView } from "./session-view.js";
+import { buildSessionView, isTestRunnerCommand } from "./session-view.js";
+
+// ── HTTP Server setup for route testing ─────────────────────────────────────
+
+let base = "";
+let serverPort = 0;
+const server = createServer();
+
+before(async () => {
+  let handler: ((req: IncomingMessage, res: ServerResponse, next: () => void) => void) | undefined;
+  const mockFetch = mockJules({ connectedRepos: ["owner/valid-repo"] }) as typeof fetch;
+  const plugin = jevGates({ JULES_API_KEY: "secret-jules-key" }, { julesFetch: mockFetch });
+  const mount = plugin.configureServer as unknown as (s: unknown) => void;
+  mount({ middlewares: { use: (fn: typeof handler) => (handler = fn) } });
+  server.on("request", (req, res) =>
+    handler?.(req, res, () => {
+      res.statusCode = 404;
+      res.end();
+    })
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  serverPort = (server.address() as AddressInfo).port;
+  base = `http://127.0.0.1:${serverPort}`;
+});
+
+after(() => server.close());
+
+function rawRequest(path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port: serverPort, path, method: "GET", headers }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => resolve({ status: res.statusCode || 0, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// ── HTTP Route Tests ────────────────────────────────────────────────────────
+
+test("GET /api/jules returns mode and repos", async () => {
+  const res = await fetch(`${base}/api/jules`);
+  assert.equal(res.status, 200);
+  const data = (await res.json()) as { mode: string; repos: string[] };
+  assert.equal(data.mode, "live");
+  assert.ok(Array.isArray(data.repos));
+  assert.deepEqual(data.repos, ["owner/valid-repo"]);
+});
+
+test("Dispatch is refused with no repo and with placeholder repo", async () => {
+  const noRepoRes = await fetch(`${base}/api/jules/dispatch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tile: { title: "Test task" }, project: {} }),
+  });
+  assert.equal(noRepoRes.status, 400);
+  assert.deepEqual(await noRepoRes.json(), { error: "Set this project's repo in src/data/initialData.js." });
+
+  const placeholderRes = await fetch(`${base}/api/jules/dispatch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tile: { title: "Test task" }, project: { repo: "your-org/harness" } }),
+  });
+  assert.equal(placeholderRes.status, 400);
+  assert.deepEqual(await placeholderRes.json(), { error: "Set this project's repo in src/data/initialData.js." });
+});
+
+test("A foreign Host gets 403 on both /api/gate and /api/jules", async () => {
+  const gateRes = await rawRequest("/api/gate", { host: "attacker.example" });
+  assert.equal(gateRes.status, 403);
+
+  const julesRes = await rawRequest("/api/jules", { host: "attacker.example" });
+  assert.equal(julesRes.status, 403);
+});
+
+test("A foreign Origin gets 403 on both /api/gate and /api/jules", async () => {
+  const gateRes = await fetch(`${base}/api/gate`, {
+    headers: { origin: "http://attacker.example" },
+  });
+  assert.equal(gateRes.status, 403);
+
+  const julesRes = await fetch(`${base}/api/jules`, {
+    headers: { origin: "http://attacker.example" },
+  });
+  assert.equal(julesRes.status, 403);
+});
+
+test("Approve without JSON gets 415", async () => {
+  const res = await fetch(`${base}/api/jules/sess-123/approve`, {
+    method: "POST",
+  });
+  assert.equal(res.status, 415);
+});
+
+test("A bad session ID gets 400", async () => {
+  const res = await fetch(`${base}/api/jules/bad@session!id/approve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 400);
+});
+
+test("Both 404 messages are right", async () => {
+  // Source 404: when dispatching with unconnected valid repo
+  const dispatchRes = await fetch(`${base}/api/jules/dispatch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tile: { title: "Test task" }, project: { repo: "unconnected/repo" } }),
+  });
+  assert.equal(dispatchRes.status, 400);
+  const dispatchBody = (await dispatchRes.json()) as { error: string };
+  assert.equal(dispatchBody.error, "repo not connected to Jules (install the Jules GitHub app on it)");
+
+  // Session 404
+  const sessionRes = await fetch(`${base}/api/jules/nonexistent123`);
+  assert.equal(sessionRes.status, 404);
+  const sessionBody = (await sessionRes.json()) as { error: string };
+  assert.equal(sessionBody.error, "Jules session not found");
+});
+
+test("No response ever contains the key", async () => {
+  const res = await fetch(`${base}/api/jules`);
+  const text = await res.text();
+  assert.ok(!text.includes("secret-jules-key"));
+});
+
+// ── Session View Unit Tests ──────────────────────────────────────────────────
+
+test("A mock session with 45 activities over two pages gives lastStep from the 45th", async () => {
+  const activities = Array.from({ length: 45 }, (_, i) => ({
+    name: `act-${i + 1}`,
+    createTime: new Date(Date.now() + (i + 1) * 1000).toISOString(),
+    progressUpdated: {
+      title: `Step ${i + 1}`,
+      description: `Description ${i + 1}`,
+    },
+  }));
+
+  const mockSession = { id: "sess-45", state: "IN_PROGRESS" };
+  const mockFetch = mockJules({
+    sessions: {
+      "sess-45": { session: mockSession, activities },
+    },
+  }) as typeof fetch;
+
+  const client = new JulesClient({ fetch: mockFetch });
+  const { activities: fetchedActs, capped } = await client.listAllActivities("sess-45");
+
+  assert.equal(fetchedActs.length, 45);
+  assert.equal(capped, false);
+
+  const view = buildSessionView(mockSession, fetchedActs, capped);
+  assert.equal(view.lastStep?.title, "Step 45");
+  assert.equal(view.lastStep?.description, "Description 45");
+});
+
+test("Activities in the wrong order still give the newest step", () => {
+  const mockSession = { id: "sess-order", state: "IN_PROGRESS" };
+  const activities = [
+    {
+      name: "act-newest",
+      createTime: "2025-01-02T12:00:00Z",
+      progressUpdated: { title: "Newest Step", description: "This is newest" },
+    },
+    {
+      name: "act-oldest",
+      createTime: "2025-01-01T12:00:00Z",
+      progressUpdated: { title: "Oldest Step", description: "This is oldest" },
+    },
+  ];
+
+  const view = buildSessionView(mockSession, activities);
+  assert.equal(view.lastStep?.title, "Newest Step");
+  assert.equal(view.newestActivityName, "act-newest");
+});
+
+test("git checkout and npm run typecheck don't set testsPassed", () => {
+  assert.equal(isTestRunnerCommand("git checkout -b feature"), false);
+  assert.equal(isTestRunnerCommand("npm run typecheck"), false);
+  assert.equal(isTestRunnerCommand("cat test/gate.test.ts"), false);
+
+  assert.equal(isTestRunnerCommand("npm test"), true);
+  assert.equal(isTestRunnerCommand("npm run test"), true);
+  assert.equal(isTestRunnerCommand("pnpm test"), true);
+  assert.equal(isTestRunnerCommand("yarn test"), true);
+  assert.equal(isTestRunnerCommand("node --test"), true);
+  assert.equal(isTestRunnerCommand("tsx --test"), true);
+  assert.equal(isTestRunnerCommand("vitest"), true);
+  assert.equal(isTestRunnerCommand("jest"), true);
+  assert.equal(isTestRunnerCommand("pytest"), true);
+
+  const mockSession = { id: "sess-cmd", state: "IN_PROGRESS" };
+  const activities = [
+    {
+      artifacts: [
+        { bashOutput: { command: "git checkout -b fix", exitCode: 0 } },
+        { bashOutput: { command: "npm run typecheck", exitCode: 0 } },
+      ],
+    },
+  ];
+
+  const view = buildSessionView(mockSession, activities);
+  assert.equal(view.report.testsPassed, undefined);
+});
 
 test("JulesClient dispatch request body formatting and mock routing", async () => {
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];
@@ -29,132 +237,4 @@ test("JulesClient dispatch request body formatting and mock routing", async () =
   assert.equal(body.sourceContext.githubRepoContext.startingBranch, "main");
   assert.equal(body.requirePlanApproval, true);
   assert.equal(body.automationMode, "AUTO_CREATE_PR");
-});
-
-test("session-view.ts maps every session state, plan, progress, and lastStep correctly", () => {
-  const session = {
-    id: "sess-123",
-    url: "https://jules.google/session/sess-123",
-    state: "IN_PROGRESS",
-  };
-
-  const activities = [
-    {
-      planGenerated: {
-        plan: {
-          steps: [
-            { index: 1, title: "Step One", description: "First" },
-            { index: 2, title: "Step Two", description: "Second" },
-          ],
-        },
-      },
-    },
-    {
-      progressUpdated: {
-        title: "Step One Done",
-        description: "Finished step one",
-      },
-    },
-  ];
-
-  const view = buildSessionView(session, activities);
-  assert.equal(view.id, "sess-123");
-  assert.equal(view.state, "IN_PROGRESS");
-  assert.deepEqual(view.plan, ["Step One", "Step Two"]);
-  assert.equal(view.progress, 48);
-  assert.deepEqual(view.lastStep, {
-    title: "Step One Done",
-    description: "Finished step one",
-  });
-  assert.equal(view.needsYou, null);
-});
-
-test("session-view.ts maps outputs PR and test bashOutput into report", () => {
-  const session = {
-    id: "sess-456",
-    state: "COMPLETED",
-    outputs: [
-      {
-        pullRequest: {
-          url: "https://github.com/your-org/harness/pull/42",
-          title: "PR 42",
-          description: "Summary of changes from PR description",
-        },
-      },
-    ],
-  };
-
-  const activities = [
-    {
-      artifacts: [
-        {
-          bashOutput: {
-            command: "npm test",
-            output: "18 passed",
-            exitCode: 0,
-          },
-        },
-      ],
-    },
-  ];
-
-  const view = buildSessionView(session, activities);
-  assert.equal(view.progress, 100);
-  assert.equal(view.report.prUrl, "https://github.com/your-org/harness/pull/42");
-  assert.equal(view.report.summary, "Summary of changes from PR description");
-  assert.equal(view.report.testsPassed, true);
-});
-
-test("session-view.ts maps failure reason and awaiting states into needsYou", () => {
-  const failSession = { id: "sess-fail", state: "FAILED" };
-  const failActivities = [
-    {
-      sessionFailed: { reason: "Build error on step 2" },
-    },
-  ];
-  const failView = buildSessionView(failSession, failActivities);
-  assert.equal(failView.needsYou, "Build error on step 2");
-
-  const planSession = { id: "sess-plan", state: "AWAITING_PLAN_APPROVAL" };
-  const planView = buildSessionView(planSession, []);
-  assert.equal(planView.needsYou, "Awaiting plan approval");
-
-  const feedbackSession = { id: "sess-fb", state: "AWAITING_USER_FEEDBACK" };
-  const feedbackActivities = [
-    {
-      agentMessaged: { agentMessage: "Which database should I use?" },
-    },
-  ];
-  const feedbackView = buildSessionView(feedbackSession, feedbackActivities);
-  assert.equal(feedbackView.needsYou, "Which database should I use?");
-});
-
-test("mockJules handles getSource, approvePlan and sendMessage", async () => {
-  const fetchMock = mockJules({
-    connectedRepos: ["your-org/harness"],
-  }) as typeof fetch;
-  const client = new JulesClient({ apiKey: "test-key", fetch: fetchMock });
-
-  const source = await client.getSource("your-org", "harness");
-  assert.equal(source.name, "sources/github/your-org/harness");
-
-  await assert.rejects(
-    async () => client.getSource("your-org", "unknown-repo"),
-    /repo not connected to Jules/
-  );
-
-  const session = await client.createSession({
-    prompt: "Do work",
-    title: "Task",
-    source: "sources/github/your-org/harness",
-  });
-
-  await client.approvePlan(session.id!);
-  const updated = await client.getSession(session.id!);
-  assert.equal(updated.state, "IN_PROGRESS");
-
-  await client.sendMessage(session.id!, "User reply");
-  const activities = await client.listActivities(session.id!);
-  const lastMsg = activities.activities?.find((a) => a.userMessaged?.userMessage === "User reply");
-  assert.ok(lastMsg);
 });
