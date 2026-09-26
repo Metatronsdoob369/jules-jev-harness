@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Activity, Clock, Cpu, Zap, Shield, CheckSquare, Layers, BarChart2, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { X, Activity, Clock, Cpu, Zap, Shield, CheckSquare, Layers, BarChart2, ShieldCheck, AlertTriangle, ExternalLink } from 'lucide-react';
 
 export default function SpecTelemetryDrawer({ task, project, activeModel, onClose, onUpdateProgress, onMoveTask }) {
   if (!task) {
@@ -49,6 +49,54 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
         <div className="p-2 rounded bg-drift-amber/10 border border-drift-amber/40 text-[11px] text-drift-amber">
           <span className="font-bold">NEEDS YOU:</span> {task.needsYou}
           <span className="block text-[10px] text-slate-400 mt-0.5">Move the tile with Stage Control to decide.</span>
+        </div>
+      )}
+
+      {/* Jules Session Link & Plan */}
+      {(task.sessionId || task.sessionUrl) && (
+        <div className="p-3 rounded-lg bg-canvas-base border border-optic-cyan/50 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-optic-cyan flex items-center space-x-1">
+              <Zap className="w-3.5 h-3.5" />
+              <span>JULES SESSION</span>
+            </span>
+            {task.sessionUrl && (
+              <a
+                href={task.sessionUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-wal-emerald hover:underline flex items-center space-x-1 text-[11px] font-bold"
+              >
+                <span>OPEN SESSION</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+          </div>
+          <div className="text-[10px] text-slate-400">
+            ID: <span className="text-slate-200">{task.sessionId}</span>
+          </div>
+          {task.lastStep && (
+            <div className="text-[11px] text-slate-300 bg-canvas-deck p-2 rounded border border-canvas-bezel space-y-0.5">
+              <span className="text-[10px] text-slate-500 block font-bold">NEWEST STEP</span>
+              <div className="font-bold text-wal-emerald">{task.lastStep.title}</div>
+              {task.lastStep.description && (
+                <div className="text-slate-400 text-[10px]">{task.lastStep.description}</div>
+              )}
+            </div>
+          )}
+          {Array.isArray(task.plan) && task.plan.length > 0 && (
+            <div className="space-y-1 pt-1">
+              <span className="text-[10px] text-slate-400 font-bold block">PLAN STEPS:</span>
+              <div className="space-y-1">
+                {task.plan.map((step, idx) => (
+                  <div key={idx} className="text-[10px] text-slate-300 flex items-start space-x-1.5">
+                    <span className="text-optic-cyan shrink-0">{idx + 1}.</span>
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
