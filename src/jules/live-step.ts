@@ -60,16 +60,10 @@ export async function evalLiveStep(
   if (sessionView.lastStep) patch.lastStep = sessionView.lastStep;
   if (sessionView.report) patch.report = sessionView.report;
 
-  // Clear stale needsYou if session moved on to IN_PROGRESS or COMPLETED
+  // Clear stale needsYou when session leaves AWAITING_PLAN_APPROVAL or AWAITING_USER_FEEDBACK
   if ((sessionView.state === 'IN_PROGRESS' || sessionView.state === 'COMPLETED') && tile.needsYou) {
-    if (
-      tile.needsYou === 'Awaiting plan approval' ||
-      tile.needsYou.startsWith('Awaiting user feedback') ||
-      tile.needsYou === sessionView.needsYou
-    ) {
-      if (!sessionView.needsYou) {
-        patch.needsYou = null;
-      }
+    if (!sessionView.needsYou) {
+      patch.needsYou = null;
     }
   }
 
@@ -78,6 +72,7 @@ export async function evalLiveStep(
     if (tile.askedFor !== stateKey) {
       patch.askedFor = stateKey;
       patch.needsYou = sessionView.needsYou || 'Session failed';
+      patch.handledCompleted = true;
     }
     return { patch, question };
   }
@@ -85,7 +80,6 @@ export async function evalLiveStep(
   // 2. AWAITING_PLAN_APPROVAL
   if (sessionView.state === 'AWAITING_PLAN_APPROVAL') {
     if (tile.askedFor !== stateKey) {
-      patch.askedFor = stateKey;
       patch.needsYou = 'Awaiting plan approval';
       question = {
         tile,
@@ -111,12 +105,13 @@ export async function evalLiveStep(
   if (sessionView.state === 'IN_PROGRESS' && sessionView.lastStep) {
     const stepKey = `window:${sessionView.lastStep.title}:${sessionView.lastStep.description}`;
     if (tile.askedFor !== stepKey) {
-      patch.askedFor = stepKey;
       if (runGate) {
         try {
+          const lastStepStr = `${sessionView.lastStep.title || ''}: ${sessionView.lastStep.description || ''}`;
           const verdict = await runGate('window', {
             tile,
-            lastStep: sessionView.lastStep,
+            atWindow: true,
+            lastStep: lastStepStr,
           });
 
           if (verdict.action === 'open') {
@@ -128,8 +123,12 @@ export async function evalLiveStep(
               url: sessionView.url || tile.sessionUrl,
               stateKey: stepKey,
             };
-          } else if (verdict.action === 'escalate') {
+          } else if (verdict.verdict === 'escalate') {
+            patch.askedFor = stepKey;
             patch.needsYou = verdict.reason || 'Window gate escalated';
+          } else {
+            // keep_going or other non-asking verdict
+            patch.askedFor = stepKey;
           }
         } catch (err) {
           // Gate evaluation error
@@ -150,7 +149,6 @@ export async function evalLiveStep(
 
         if (doneVerdict.action === 'send_back') {
           const missingStr = doneVerdict.reason || 'Missing items';
-          patch.askedFor = stateKey;
           question = {
             tile,
             text: `Ask Jules to finish: ${missingStr}?`,
@@ -160,14 +158,13 @@ export async function evalLiveStep(
             stateKey,
           };
           return { patch, question };
-        } else if (doneVerdict.action === 'escalate') {
+        } else if (doneVerdict.verdict === 'escalate') {
           patch.askedFor = stateKey;
           patch.needsYou = doneVerdict.reason || 'Done gate escalated';
           patch.handledCompleted = true;
           return { patch, question };
         } else if (doneVerdict.action === 'done') {
           if (doneVerdict.verdict === 'confirm') {
-            patch.askedFor = stateKey;
             question = {
               tile,
               text: `Mark ${tile.id} done?`,
@@ -217,8 +214,6 @@ export async function evalRiskyGate(
       pending: { kind: 'merge', detail: `Merge ${sessionView.report?.prUrl || ''}` },
     });
 
-    patch.askedFor = stateKey;
-
     if (riskyVerdict.action === 'run') {
       const prUrl = sessionView.report?.prUrl || tile.sessionUrl;
       question = {
@@ -228,10 +223,12 @@ export async function evalRiskyGate(
         prUrl,
         stateKey,
       };
-    } else if (riskyVerdict.action === 'block' || riskyVerdict.action === 'escalate') {
+    } else if (riskyVerdict.action === 'block' || riskyVerdict.verdict === 'escalate') {
+      patch.askedFor = stateKey;
       patch.needsYou = riskyVerdict.reason || `Risky gate ${riskyVerdict.action}ed`;
       patch.handledCompleted = true;
     } else {
+      patch.askedFor = stateKey;
       patch.needsYou = riskyVerdict.reason || `Risky gate unexpected action: ${riskyVerdict.action}`;
       patch.handledCompleted = true;
     }

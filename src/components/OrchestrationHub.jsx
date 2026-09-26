@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Cpu, Play, Pause, Zap, GitBranch, ShieldCheck, Check, X } from 'lucide-react';
 import { executeGate, gateStatus } from '../gates/gates.js';
 import { evalLiveStep, evalRiskyGate } from '../jules/live-step.js';
+import { evalRouteDecision } from '../jules/route-decision.js';
 
 const MODE_LABEL = { live: 'JEV LIVE', 'stand-in': 'JEV STAND-IN', offline: 'GATES OFFLINE' };
 const MODE_STYLE = {
@@ -35,6 +36,7 @@ export default function OrchestrationHub({
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
   const isPollingRef = useRef(false);
+  const busyRef = useRef(false);
   const consecutiveFailuresRef = useRef({});
   const approvalRef = useRef(approval);
   approvalRef.current = approval;
@@ -81,6 +83,10 @@ export default function OrchestrationHub({
     setLogs((prev) => [entry, ...prev].slice(0, 30));
   }
 
+  function hold(tile, v) {
+    onPatchTask(tile.id, { needsYou: v.reason });
+  }
+
   function ask(tile, v, questionText, options = {}) {
     onPatchTask(tile.id, { needsYou: questionText });
     setApproval({ tile, verdict: v, question: questionText, ...options });
@@ -108,13 +114,18 @@ export default function OrchestrationHub({
     if (julesMode !== 'live') return;
 
     const interval = setInterval(async () => {
-      if (isPollingRef.current) return; // Skip if previous poll still running
+      if (isPollingRef.current) return;
       isPollingRef.current = true;
 
       try {
         const currentTasks = tasksRef.current;
         const liveTasks = currentTasks.filter(
-          (t) => t.sessionId && t.column !== 'DONE' && !t.handledCompleted && t.needsYou !== 'Session failed'
+          (t) =>
+            t.sessionId &&
+            t.column !== 'DONE' &&
+            !t.handledCompleted &&
+            t.needsYou !== 'Session failed' &&
+            !(t.needsYou && t.needsYou.toLowerCase().includes('failed'))
         );
 
         for (const tile of liveTasks) {
@@ -151,6 +162,9 @@ export default function OrchestrationHub({
                 question.text,
                 question
               );
+              if (question.stateKey) {
+                onPatchTask(tile.id, { askedFor: question.stateKey });
+              }
             }
           } catch (e) {
             const fails = (consecutiveFailuresRef.current[tile.sessionId] || 0) + 1;
@@ -174,46 +188,56 @@ export default function OrchestrationHub({
     if (!isExecuting || approval) return;
 
     const interval = setInterval(async () => {
-      const currentTasks = tasksRef.current;
-      const unrouted = currentTasks.filter((t) => t.column === 'BACKLOG' && !t.needsYou);
-      if (unrouted.length === 0) return;
-
-      const tile = unrouted[0];
-
-      // Route gate
-      const v = await gate('route', tile);
-      if (v.verdict === 'act') {
-        startSimulated(tile, v.action);
-      } else if (v.verdict === 'confirm') {
-        askRouting(tile, v);
-      } else {
-        onPatchTask(tile.id, { needsYou: v.reason });
+      if (busyRef.current) return;
+      busyRef.current = true;
+      try {
+        const currentTasks = tasksRef.current;
+        const workingSimulated = currentTasks.filter(
+          (t) => t.column === 'IN_PROGRESS' && !t.needsYou && !t.sessionId
+        );
+        if (workingSimulated.length > 0) {
+          await advanceSimulated(workingSimulated[Math.floor(Math.random() * workingSimulated.length)]);
+          return;
+        }
+        const next = currentTasks.find((t) => t.column === 'BACKLOG' && !t.needsYou);
+        if (next) await dispatch(next);
+      } finally {
+        busyRef.current = false;
       }
     }, 2800);
 
     return () => clearInterval(interval);
   }, [isExecuting, approval, julesMode]);
 
-  function askRouting(tile, v) {
-    if (v.action === 'jules') {
-      if (julesMode === 'live') {
-        const project = projectsRef.current.find((p) => p.id === tile.projectId);
-        const repoStr = (project?.repo ?? '').trim();
-        if (!repoStr || repoStr === 'your-org/harness') {
-          onPatchTask(tile.id, { needsYou: "Set this project's repo in src/data/initialData.js." });
-          log('act', `Dispatch refused for ${tile.id}: project repo not set or placeholder.`);
-          return;
-        }
-        ask(tile, v, `Start a Jules session for ${tile.id}?`, { kind: 'dispatch_jules' });
-      } else {
-        ask(tile, v, `Send ${tile.id} to Jules (Simulated)?`, { kind: 'start_simulated_jules' });
+  async function dispatch(tile) {
+    const project = projectsRef.current.find((p) => p.id === tile.projectId);
+    const v = await gate('route', tile);
+    const res = evalRouteDecision(v, julesMode, tile, project);
+
+    if (res.patch) {
+      onPatchTask(tile.id, res.patch);
+    }
+
+    if (res.action === 'dispatch_jules') {
+      if (res.question) {
+        ask(tile, v, res.question.text, res.question);
       }
-    } else {
-      ask(tile, v, `Send ${tile.id} to Writer model (Simulated)?`, { kind: 'start_simulated_writer' });
+    } else if (res.action === 'start_simulated_jules') {
+      if (res.question) {
+        ask(tile, v, res.question.text, res.question);
+      } else {
+        startSimulated(tile, 'jules');
+      }
+    } else if (res.action === 'start_simulated_writer') {
+      if (res.question) {
+        ask(tile, v, res.question.text, res.question);
+      } else {
+        startSimulated(tile, 'writer');
+      }
     }
   }
 
-  async function dispatchJules(tile) {
+  async function startRealJules(tile) {
     const project = projectsRef.current.find((p) => p.id === tile.projectId);
     log('note', `Dispatching ${tile.id} to Jules...`);
     try {
@@ -248,9 +272,48 @@ export default function OrchestrationHub({
   }
 
   function startSimulated(tile, owner) {
-    onMoveTask(tile.id, 'IN_PROGRESS');
     onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules (Simulated)' : 'Writer model (Simulated)' });
+    onMoveTask(tile.id, 'IN_PROGRESS');
     log('act', `Routed ${tile.id} to ${owner} (simulated).`);
+  }
+
+  async function advanceSimulated(tile) {
+    const steps = Math.max(1, tile.subtasks?.length ?? 1);
+    const from = tile.progress ?? 0;
+    const to = Math.min(100, from + 10 + Math.floor(Math.random() * 20));
+    const finished = (p) => Math.floor((p / 100) * steps);
+    onUpdateTaskProgress(tile.id, to);
+
+    // Finishing a plan step opens a window, if this tile has checkpoints.
+    if (tile.checkpointActive && to < 100 && finished(to) > finished(from)) {
+      const step = tile.subtasks[finished(to) - 1];
+      const v = await gate('window', tile, { atWindow: true, lastStep: `Finished: ${step}` });
+      if (v.action === 'open' && v.verdict !== 'escalate') {
+        return ask(tile, v, `Bring in a ${v.details?.role ?? 'reviewer'} on ${tile.id} now?`, { kind: 'simulated_window' });
+      }
+      if (v.verdict === 'escalate') hold(tile, v);
+      return;
+    }
+
+    if (to >= 100) {
+      const report = {
+        summary: `Completed: ${(tile.subtasks ?? []).join('; ')}.`,
+        prUrl: `sim://${tile.id}`,
+        testsPassed: true
+      };
+      const v = await gate('done', tile, { report });
+      if (v.action === 'done' && v.verdict === 'act') return onMoveTask(tile.id, 'REVIEW');
+      if (v.action === 'done' && v.verdict === 'confirm') return ask(tile, v, `Mark ${tile.id} done?`, { kind: 'simulated_done' });
+      if (v.action === 'send_back' && v.verdict === 'act') return sendBack(tile);
+      hold(tile, v);
+    }
+  }
+
+  function sendBack(tile) {
+    const steps = Math.max(1, tile.subtasks?.length ?? 1);
+    onUpdateTaskProgress(tile.id, Math.round((100 * (steps - 1)) / steps));
+    onMoveTask(tile.id, 'IN_PROGRESS');
+    onPatchTask(tile.id, { needsYou: null });
   }
 
   async function answer(yes) {
@@ -259,7 +322,7 @@ export default function OrchestrationHub({
 
     if (kind === 'dispatch_jules') {
       if (yes) {
-        await dispatchJules(tile);
+        await startRealJules(tile);
       } else {
         onPatchTask(tile.id, { needsYou: 'Dispatch declined' });
       }
@@ -269,6 +332,14 @@ export default function OrchestrationHub({
     } else if (kind === 'start_simulated_writer') {
       if (yes) startSimulated(tile, 'writer');
       else onPatchTask(tile.id, { needsYou: 'Routing declined' });
+    } else if (kind === 'simulated_window') {
+      const role = verdict?.details?.role ?? 'reviewer';
+      log('note', yes
+        ? `Window on ${tile.id}: a ${role} joins (pick the model in LM settings).`
+        : `Window on ${tile.id}: kept going without another model.`);
+    } else if (kind === 'simulated_done') {
+      if (yes) onMoveTask(tile.id, 'REVIEW');
+      else sendBack(tile);
     } else if (kind === 'jules_plan') {
       if (yes) {
         try {
@@ -320,6 +391,9 @@ export default function OrchestrationHub({
             question.text,
             question
           );
+          if (question.stateKey) {
+            onPatchTask(tile.id, { askedFor: question.stateKey });
+          }
         }
       } else {
         onPatchTask(tile.id, { needsYou: 'Marking done declined' });

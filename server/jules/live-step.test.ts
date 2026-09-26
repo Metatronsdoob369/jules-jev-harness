@@ -10,14 +10,14 @@ test("live-step: each state asks once", async () => {
     newestActivityName: "act-plan-1",
   };
 
-  // First call: should ask question
+  // First call: should return question
   const res1 = await evalLiveStep(tile, sView);
   assert.ok(res1.question);
   assert.equal(res1.question.kind, "jules_plan");
-  assert.equal(res1.patch.askedFor, "AWAITING_PLAN_APPROVAL:act-plan-1");
+  assert.equal(res1.question.stateKey, "AWAITING_PLAN_APPROVAL:act-plan-1");
 
-  // Second call with updated tile (askedFor set): should NOT ask question again
-  const updatedTile = { ...tile, ...res1.patch };
+  // Tile with askedFor set (after user answered NO or question shown): should NOT return question again
+  const updatedTile = { ...tile, askedFor: "AWAITING_PLAN_APPROVAL:act-plan-1" };
   const res2 = await evalLiveStep(updatedTile, sView);
   assert.equal(res2.question, null);
 });
@@ -62,8 +62,8 @@ test("live-step: COMPLETED runs done and risky gates once", async () => {
   assert.ok(res1.question);
   assert.equal(res1.question.kind, "jules_pr");
 
-  // Second call with updated tile: gate should not re-run
-  const updatedTile = { ...tile, ...res1.patch };
+  // Second call with askedFor set: gate should not re-run
+  const updatedTile = { ...tile, askedFor: "COMPLETED:act-done-1" };
   gateCalls.length = 0;
   const res2 = await evalLiveStep(updatedTile, sView, runGate);
   assert.deepEqual(gateCalls, []);
@@ -91,21 +91,28 @@ test("live-step: risky block never opens anything and flags tile", async () => {
   assert.equal(res.patch.handledCompleted, true);
 });
 
-test("live-step: window gate open asks first", async () => {
+test("live-step: window gate request has atWindow: true and a string lastStep", async () => {
   const tile = { id: "TSK-105", column: "IN_PROGRESS" };
   const sView = {
     id: "sess-1",
     state: "IN_PROGRESS",
-    lastStep: { title: "Step 2: Add tests", description: "Writing vitest tests" },
+    lastStep: { title: "Step 2", description: "Writing vitest tests" },
     newestActivityName: "act-prog-1",
   };
 
-  const runGate = async (name: string) => {
-    if (name === "window") return { action: "open", verdict: "confirm" };
+  let capturedExtra: any = null;
+  const runGate = async (name: string, extra: any) => {
+    if (name === "window") {
+      capturedExtra = extra;
+      return { action: "open", verdict: "confirm" };
+    }
     return {};
   };
 
   const res = await evalLiveStep(tile, sView, runGate);
+  assert.ok(capturedExtra);
+  assert.equal(capturedExtra.atWindow, true);
+  assert.equal(capturedExtra.lastStep, "Step 2: Writing vitest tests");
   assert.ok(res.question);
   assert.equal(res.question.kind, "jules_window_open");
   assert.ok(res.question.text.includes("Review TSK-105 in Jules now?"));

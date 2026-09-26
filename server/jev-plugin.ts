@@ -23,6 +23,9 @@ import { buildSessionView } from "./jules/session-view.js";
 
 type Next = (err?: unknown) => void;
 
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+const isLoopback = (req: IncomingMessage) => LOOPBACK.has(req.socket.remoteAddress ?? "");
+
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const SESSION_ID_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
 const REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -66,10 +69,11 @@ export function jevGates(env: Record<string, string>, options?: { julesFetch?: t
 
     if (rawPath.startsWith("/api/gate") || rawPath.startsWith("/api/jules")) {
       const hostHeader = (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ?? "";
-      // 1. Host check
       const hostname = getHostname(hostHeader);
-      if (!allowLan && !ALLOWED_HOSTS.has(hostname)) {
-        return send(res, 403, { error: "Forbidden: Host not allowed." });
+
+      // 1. Loopback & Host check
+      if (!allowLan && (!isLoopback(req) || !ALLOWED_HOSTS.has(hostname))) {
+        return send(res, 403, { error: "Forbidden: Request must come from this computer." });
       }
 
       // 2. Origin check
