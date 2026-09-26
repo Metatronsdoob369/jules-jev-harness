@@ -22,12 +22,24 @@ export default function OrchestrationHub({
   setIsExecuting
 }) {
   const [mode, setMode] = useState(null);
+  const [julesMode, setJulesMode] = useState('simulated');
   const [logs, setLogs] = useState([]);
   const [lastGateVerdict, setLastGateVerdict] = useState(null);
-  const [approval, setApproval] = useState(null); // { tile, verdict, question }
+  const [approval, setApproval] = useState(null); // { tile, verdict, question, kind, extra }
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDoneWhen, setNewTaskDoneWhen] = useState('');
   const busy = useRef(false);
+
+  // ── Fetch Jules status ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    fetch('/api/jules')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.mode) setJulesMode(data.mode);
+      })
+      .catch(() => setJulesMode('simulated'));
+  }, []);
 
   // ── Talking to the gates ───────────────────────────────────────────────────
 
@@ -65,9 +77,9 @@ export default function OrchestrationHub({
     onPatchTask(tile.id, { needsYou: v.reason });
   }
 
-  function ask(tile, v, question) {
+  function ask(tile, v, question, options = {}) {
     onPatchTask(tile.id, { needsYou: question });
-    setApproval({ tile, verdict: v, question });
+    setApproval({ tile, verdict: v, question, ...options });
     setIsExecuting(false);
   }
 
@@ -86,7 +98,121 @@ export default function OrchestrationHub({
     });
   }, []);
 
-  // ── The loop: simulated agents do the work, the gates judge every moment ──
+  // ── Polling real Jules sessions ────────────────────────────────────────────
+
+  useEffect(() => {
+    if (julesMode !== 'live') return;
+
+    const interval = setInterval(async () => {
+      const liveTasks = tasks.filter((t) => t.sessionId && t.column === 'IN_PROGRESS');
+      for (const tile of liveTasks) {
+        try {
+          const res = await fetch(`/api/jules/${tile.sessionId}`);
+          if (!res.ok) continue;
+          const sView = await res.json();
+
+          const prevProgress = tile.progress ?? 0;
+          const newProgress = sView.progress ?? prevProgress;
+          const prevLastStepTitle = tile.lastStep?.title;
+          const newLastStepTitle = sView.lastStep?.title;
+
+          // Update tile state
+          onPatchTask(tile.id, {
+            progress: newProgress,
+            plan: sView.plan,
+            lastStep: sView.lastStep,
+            report: sView.report,
+            needsYou: sView.needsYou ?? tile.needsYou,
+          });
+
+          // Rule 2 & 5: Checkpoints window gate check when progress updates
+          if (
+            tile.checkpointActive &&
+            newLastStepTitle &&
+            newLastStepTitle !== prevLastStepTitle &&
+            sView.state !== 'COMPLETED'
+          ) {
+            const v = await gate('window', tile, {
+              atWindow: true,
+              lastStep: `${sView.lastStep.title}: ${sView.lastStep.description || ''}`,
+            });
+
+            if (v.action === 'open') {
+              // Open the Jules session so the person can review it, and log manual review
+              if (sView.url) {
+                window.open(sView.url, '_blank');
+              }
+              log('note', `Window gate on ${tile.id}: opened Jules session for manual review.`);
+            }
+          }
+
+          // State: AWAITING_PLAN_APPROVAL
+          if (sView.state === 'AWAITING_PLAN_APPROVAL' && !approval) {
+            ask(
+              tile,
+              { gate: 'jules_plan', action: 'approve_plan', verdict: 'confirm', reason: 'Awaiting plan approval' },
+              `Approve Jules plan for ${tile.id}?`,
+              { kind: 'jules_plan', sessionView: sView }
+            );
+          }
+
+          // State: AWAITING_USER_FEEDBACK
+          if (sView.state === 'AWAITING_USER_FEEDBACK' && !approval) {
+            ask(
+              tile,
+              { gate: 'jules_feedback', action: 'user_feedback', verdict: 'confirm', reason: sView.needsYou },
+              `Jules feedback for ${tile.id}: ${sView.needsYou}`,
+              { kind: 'jules_feedback', sessionView: sView }
+            );
+          }
+
+          // State: FAILED
+          if (sView.state === 'FAILED') {
+            onPatchTask(tile.id, { needsYou: sView.needsYou || 'Session failed' });
+          }
+
+          // State: COMPLETED
+          if (sView.state === 'COMPLETED' && tile.column === 'IN_PROGRESS') {
+            const v = await gate('done', tile, { report: sView.report });
+            if (v.action === 'done') {
+              // Run risky gate before merging / marking done
+              const project = projects.find((p) => p.id === tile.projectId);
+              const riskyV = await gate('risky', tile, {
+                pending: { kind: 'merge', detail: `Merge ${sView.report.prUrl}` },
+                project,
+              });
+
+              if (riskyV.action === 'ask' || riskyV.verdict === 'confirm') {
+                ask(
+                  tile,
+                  riskyV,
+                  `Open pull request for ${tile.id}? (${sView.report.prUrl})`,
+                  { kind: 'jules_pr', prUrl: sView.report.prUrl }
+                );
+              } else if (riskyV.verdict === 'act') {
+                if (sView.report.prUrl) window.open(sView.report.prUrl, '_blank');
+                onMoveTask(tile.id, 'REVIEW');
+              }
+            } else if (v.action === 'send_back') {
+              const missingStr = v.reason || 'Missing items';
+              ask(
+                tile,
+                v,
+                `Ask Jules to finish: ${missingStr}?`,
+                { kind: 'jules_done_retry', missingItems: missingStr }
+              );
+            }
+          }
+        } catch (e) {
+          // fetch error during polling
+        }
+      }
+    }, 10000); // 10 seconds polling
+
+    return () => clearInterval(interval);
+  }, [julesMode, tasks, projects, approval]);
+
+  // ── The loop: simulated agents or live dispatches ───────────────────────────
 
   useEffect(() => {
     if (!isExecuting || approval) return;
@@ -95,9 +221,9 @@ export default function OrchestrationHub({
       if (busy.current) return;
       busy.current = true;
       try {
-        const working = tasks.filter((t) => t.column === 'IN_PROGRESS' && !t.needsYou);
-        if (working.length > 0) {
-          await advance(working[Math.floor(Math.random() * working.length)]);
+        const workingSimulated = tasks.filter((t) => t.column === 'IN_PROGRESS' && !t.needsYou && !t.sessionId);
+        if (workingSimulated.length > 0) {
+          await advanceSimulated(workingSimulated[Math.floor(Math.random() * workingSimulated.length)]);
           return;
         }
         const next = tasks.find((t) => t.column === 'BACKLOG' && !t.needsYou);
@@ -108,23 +234,70 @@ export default function OrchestrationHub({
     }, 2800);
 
     return () => clearInterval(interval);
-  }, [isExecuting, approval, tasks, projects]);
+  }, [isExecuting, approval, tasks, projects, julesMode]);
 
   // BACKLOG → IN_PROGRESS goes through the route gate.
   async function dispatch(tile) {
     const v = await gate('route', tile);
     const takes = v.action === 'jules' || v.action === 'writer';
-    if (takes && v.verdict === 'act') return start(tile, v.action);
-    if (takes && v.verdict === 'confirm') return ask(tile, v, `Send ${tile.id} to ${v.action}?`);
-    hold(tile, v); // a person, a split, or no repo: it waits for you in the backlog
+    if (!takes) {
+      hold(tile, v);
+      return;
+    }
+
+    if (v.action === 'writer') {
+      // Writer model route stays simulated, tile indicates so
+      if (v.verdict === 'act') startSimulated(tile, 'writer');
+      else if (v.verdict === 'confirm') ask(tile, v, `Send ${tile.id} to Writer model (Simulated)?`, { kind: 'start_writer' });
+      else hold(tile, v);
+      return;
+    }
+
+    if (v.action === 'jules') {
+      if (julesMode === 'live') {
+        // Every real dispatch asks the person first
+        ask(tile, v, `Start a Jules session for ${tile.id}?`, { kind: 'dispatch_jules' });
+      } else {
+        if (v.verdict === 'act') startSimulated(tile, 'jules');
+        else if (v.verdict === 'confirm') ask(tile, v, `Send ${tile.id} to Jules (Simulated)?`, { kind: 'start_simulated_jules' });
+        else hold(tile, v);
+      }
+    }
   }
 
-  function start(tile, owner) {
-    onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules' : 'Writer model' });
+  async function startRealJules(tile) {
+    const project = projects.find((p) => p.id === tile.projectId);
+    try {
+      const res = await fetch('/api/jules/dispatch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tile, project }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        onPatchTask(tile.id, { needsYou: data.error || 'Failed to start Jules session' });
+        return;
+      }
+
+      onPatchTask(tile.id, {
+        assignee: 'Jules',
+        sessionId: data.sessionId,
+        sessionUrl: data.url,
+        needsYou: null,
+      });
+      onMoveTask(tile.id, 'IN_PROGRESS');
+      log('act', `Dispatched ${tile.id} to real Jules session (${data.sessionId}).`);
+    } catch (err) {
+      onPatchTask(tile.id, { needsYou: 'Failed to dispatch Jules session' });
+    }
+  }
+
+  function startSimulated(tile, owner) {
+    onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules (Simulated)' : 'Writer model (Simulated)' });
     onMoveTask(tile.id, 'IN_PROGRESS');
   }
 
-  async function advance(tile) {
+  async function advanceSimulated(tile) {
     const steps = Math.max(1, tile.subtasks?.length ?? 1);
     const from = tile.progress ?? 0;
     const to = Math.min(100, from + 10 + Math.floor(Math.random() * 20));
@@ -136,7 +309,7 @@ export default function OrchestrationHub({
       const step = tile.subtasks[finished(to) - 1];
       const v = await gate('window', tile, { atWindow: true, lastStep: `Finished: ${step}` });
       if (v.action === 'open' && v.verdict !== 'escalate') {
-        return ask(tile, v, `Bring in a ${v.details?.role ?? 'reviewer'} on ${tile.id} now?`);
+        return ask(tile, v, `Bring in a ${v.details?.role ?? 'reviewer'} on ${tile.id} now?`, { kind: 'simulated_window' });
       }
       if (v.verdict === 'escalate') hold(tile, v);
       return;
@@ -150,7 +323,7 @@ export default function OrchestrationHub({
       };
       const v = await gate('done', tile, { report });
       if (v.action === 'done' && v.verdict === 'act') return onMoveTask(tile.id, 'REVIEW');
-      if (v.action === 'done' && v.verdict === 'confirm') return ask(tile, v, `Mark ${tile.id} done?`);
+      if (v.action === 'done' && v.verdict === 'confirm') return ask(tile, v, `Mark ${tile.id} done?`, { kind: 'simulated_done' });
       if (v.action === 'send_back' && v.verdict === 'act') return sendBack(tile);
       hold(tile, v);
     }
@@ -161,25 +334,62 @@ export default function OrchestrationHub({
     onUpdateTaskProgress(tile.id, Math.round((100 * (steps - 1)) / steps));
   }
 
-  // Your yes or no on a "confirm" verdict.
-  function answer(yes) {
-    const { tile, verdict } = approval;
+  // Your yes or no on an approval question
+  async function answer(yes) {
+    const { tile, verdict, kind, prUrl, missingItems } = approval;
     onPatchTask(tile.id, { needsYou: null });
-    if (verdict.gate === 'route') {
-      if (yes) start(tile, verdict.action);
-      else onPatchTask(tile.id, { needsYou: 'Routing declined: assign it by hand' });
-    }
-    if (verdict.gate === 'window') {
-      const role = verdict.details?.role ?? 'reviewer';
-      log('note', yes
-        ? `Window on ${tile.id}: a ${role} joins (pick the model in LM settings).`
-        : `Window on ${tile.id}: kept going without another model.`);
-    }
-    if (verdict.gate === 'done') {
-      if (yes) onMoveTask(tile.id, 'REVIEW');
-      else sendBack(tile);
-    }
     setApproval(null);
+
+    if (kind === 'dispatch_jules') {
+      if (yes) {
+        await startRealJules(tile);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Jules dispatch declined' });
+      }
+    } else if (kind === 'jules_plan') {
+      if (yes && tile.sessionId) {
+        await fetch(`/api/jules/${tile.sessionId}/approve`, { method: 'POST' });
+        log('act', `Approved Jules plan for ${tile.id}.`);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Plan approval declined' });
+      }
+    } else if (kind === 'jules_done_retry') {
+      if (yes && tile.sessionId) {
+        await fetch(`/api/jules/${tile.sessionId}/message`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ prompt: `Please finish missing items: ${missingItems}` }),
+        });
+        log('act', `Asked Jules to finish missing items on ${tile.id}.`);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Retry declined' });
+      }
+    } else if (kind === 'jules_pr') {
+      if (yes) {
+        if (prUrl) window.open(prUrl, '_blank');
+        onMoveTask(tile.id, 'REVIEW');
+        log('act', `Opened PR ${prUrl} for ${tile.id}.`);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'PR opening declined' });
+      }
+    } else {
+      // General verdict handlers
+      if (verdict?.gate === 'route') {
+        if (yes) startSimulated(tile, verdict.action);
+        else onPatchTask(tile.id, { needsYou: 'Routing declined: assign it by hand' });
+      }
+      if (verdict?.gate === 'window') {
+        const role = verdict.details?.role ?? 'reviewer';
+        log('note', yes
+          ? `Window on ${tile.id}: a ${role} joins (pick the model in LM settings).`
+          : `Window on ${tile.id}: kept going without another model.`);
+      }
+      if (verdict?.gate === 'done') {
+        if (yes) onMoveTask(tile.id, 'REVIEW');
+        else sendBack(tile);
+      }
+    }
+
     setIsExecuting(true);
   }
 
@@ -310,7 +520,9 @@ export default function OrchestrationHub({
             <div className="text-[10px] text-slate-400">PRIMARY CODE ENGINEER</div>
             <div className="text-optic-cyan font-bold flex items-center space-x-1">
               <span>JULES</span>
-              <span className="text-[9px] px-1 bg-optic-cyan/20 rounded">SIMULATED RUNS</span>
+              <span className="text-[9px] px-1 bg-optic-cyan/20 rounded">
+                {julesMode === 'live' ? 'REAL SESSIONS' : 'SIMULATED RUNS'}
+              </span>
             </div>
           </div>
           <Zap className="w-4 h-4 text-optic-cyan" />
