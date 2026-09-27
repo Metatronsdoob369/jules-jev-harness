@@ -9,6 +9,11 @@ export interface Source {
   name: string;
 }
 
+export interface ListSourcesResponse {
+  sources?: Source[];
+  nextPageToken?: string;
+}
+
 export interface CreateSessionOptions {
   prompt: string;
   title?: string;
@@ -115,7 +120,13 @@ export class JulesClient {
           throw new Error("Jules key missing or invalid");
         }
         if (res.status === 404) {
-          throw new Error("repo not connected to Jules");
+          if (path.startsWith("sources")) {
+            throw new Error("repo not connected to Jules (install the Jules GitHub app on it)");
+          }
+          if (path.startsWith("sessions")) {
+            throw new Error("Jules session not found");
+          }
+          throw new Error("Resource not found");
         }
         let errMessage = `Jules API error HTTP ${res.status}`;
         try {
@@ -145,6 +156,32 @@ export class JulesClient {
 
   async getSource(owner: string, repo: string): Promise<Source> {
     return this.request<Source>(`sources/github/${owner}/${repo}`);
+  }
+
+  async listSources(): Promise<string[]> {
+    const repos: string[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+
+    while (pages < 20) {
+      pages++;
+      const query = new URLSearchParams({ pageSize: "100" });
+      if (pageToken) query.set("pageToken", pageToken);
+      const res = await this.request<ListSourcesResponse>(`sources?${query.toString()}`);
+      if (res.sources) {
+        for (const src of res.sources) {
+          if (src.name) {
+            const repo = src.name.replace(/^sources\/github\//, "");
+            if (repo && repo !== src.name) {
+              repos.push(repo);
+            }
+          }
+        }
+      }
+      pageToken = res.nextPageToken;
+      if (!pageToken) break;
+    }
+    return repos;
   }
 
   async createSession(opts: CreateSessionOptions): Promise<Session> {
@@ -185,6 +222,29 @@ export class JulesClient {
     const query = new URLSearchParams({ pageSize: "30" });
     if (pageToken) query.set("pageToken", pageToken);
     return this.request<ListActivitiesResponse>(`sessions/${id}/activities?${query.toString()}`);
+  }
+
+  async listAllActivities(id: string): Promise<{ activities: Activity[]; capped: boolean }> {
+    const activities: Activity[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+    let capped = false;
+
+    while (pages < 20) {
+      pages++;
+      const res: ListActivitiesResponse = await this.listActivities(id, pageToken);
+      if (res.activities) {
+        activities.push(...res.activities);
+      }
+      pageToken = res.nextPageToken;
+      if (!pageToken) break;
+    }
+
+    if (pageToken) {
+      capped = true;
+    }
+
+    return { activities, capped };
   }
 
   async approvePlan(id: string): Promise<Record<string, unknown>> {

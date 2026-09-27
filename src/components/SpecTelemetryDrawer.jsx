@@ -1,7 +1,11 @@
-import React from 'react';
-import { X, Activity, Clock, Cpu, Zap, Shield, CheckSquare, Layers, BarChart2, ShieldCheck, AlertTriangle, ExternalLink } from 'lucide-react';
+import React, { useState } from 'react';
+import { X, Activity, Clock, Cpu, Zap, Shield, CheckSquare, Layers, BarChart2, ShieldCheck, AlertTriangle, ExternalLink, Send } from 'lucide-react';
 
-export default function SpecTelemetryDrawer({ task, project, activeModel, onClose, onUpdateProgress, onMoveTask }) {
+export default function SpecTelemetryDrawer({ task, project, activeModel, onClose, onUpdateProgress, onMoveTask, onPatchTask }) {
+  const [messageText, setMessageText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState(null);
+
   if (!task) {
     return (
       <div className="w-80 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col justify-center items-center text-center text-slate-500 space-y-2">
@@ -15,9 +19,40 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
   }
 
   const patronageColor = project?.color || '#00E5FF';
-  // Only real verdicts show here: a tile no gate has judged says so.
   const gateVerdict = task.lastGateVerdict || null;
   const sourceLabel = gateVerdict?.source === 'jev' && gateVerdict?.mode === 'stand-in' ? 'stand-in' : gateVerdict?.source;
+  const isJulesTile = Boolean(task.sessionId);
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!messageText.trim() || !task.sessionId) return;
+    setIsSending(true);
+    setSendError(null);
+    try {
+      const res = await fetch(`/api/jules/${task.sessionId}/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: messageText.trim() }),
+      });
+      if (!res.ok) {
+        let errMessage = 'Failed to send message';
+        try {
+          const body = await res.json();
+          if (body?.error) errMessage = body.error;
+        } catch {}
+        setSendError(errMessage);
+      } else {
+        setMessageText('');
+        if (onPatchTask) {
+          onPatchTask(task.id, { needsYou: null });
+        }
+      }
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Network error sending message');
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   return (
     <div className="w-88 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col space-y-4 overflow-y-auto">
@@ -48,13 +83,15 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
       {task.needsYou && (
         <div className="p-2 rounded bg-drift-amber/10 border border-drift-amber/40 text-[11px] text-drift-amber">
           <span className="font-bold">NEEDS YOU:</span> {task.needsYou}
-          <span className="block text-[10px] text-slate-400 mt-0.5">Move the tile with Stage Control to decide.</span>
+          {!isJulesTile && (
+            <span className="block text-[10px] text-slate-400 mt-0.5">Move the tile with Stage Control to decide.</span>
+          )}
         </div>
       )}
 
-      {/* Jules Session Link & Plan */}
+      {/* Jules Session Link, Plan & Reply Box */}
       {(task.sessionId || task.sessionUrl) && (
-        <div className="p-3 rounded-lg bg-canvas-base border border-optic-cyan/50 space-y-2">
+        <div className="p-3 rounded-lg bg-canvas-base border border-optic-cyan/50 space-y-3">
           <div className="flex items-center justify-between">
             <span className="font-bold text-optic-cyan flex items-center space-x-1">
               <Zap className="w-3.5 h-3.5" />
@@ -97,6 +134,33 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
               </div>
             </div>
           )}
+
+          {/* Reply Box for sending feedback / instructions to Jules */}
+          <div className="pt-2 border-t border-canvas-bezel space-y-1.5">
+            <span className="text-[10px] text-slate-400 font-bold block">REPLY TO JULES:</span>
+            <form onSubmit={handleSendMessage} className="flex flex-col space-y-1.5">
+              <textarea
+                rows={2}
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                placeholder="Type a message or plan feedback for Jules..."
+                className="w-full bg-canvas-deck border border-canvas-bezel focus:border-optic-cyan rounded p-1.5 text-slate-200 outline-none text-[11px] resize-none"
+              />
+              {sendError && (
+                <div className="text-[10px] text-red-400">{sendError}</div>
+              )}
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isSending || !messageText.trim()}
+                  className="px-2.5 py-1 bg-optic-cyan text-canvas-deep font-bold rounded flex items-center space-x-1 hover:bg-optic-bright transition-colors disabled:opacity-40 text-[10px]"
+                >
+                  <Send className="w-3 h-3" />
+                  <span>{isSending ? 'SENDING...' : 'SEND'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -240,18 +304,21 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
         </div>
 
         <div className="space-y-1.5 bg-canvas-base p-2.5 rounded border border-canvas-bezel">
-          {task.subtasks.map((st, i) => (
-            <div key={i} className="flex items-center space-x-2 text-slate-300 text-[11px]">
-              <span className={`w-3 h-3 rounded-sm flex items-center justify-center border text-[9px] ${
-                task.progress > (i + 1) * 30
-                  ? 'bg-wal-emerald/20 border-wal-emerald text-wal-emerald'
-                  : 'border-canvas-bezel text-transparent'
-              }`}>
-                ✓
-              </span>
-              <span className={task.progress > (i + 1) * 30 ? 'line-through text-slate-500' : ''}>{st}</span>
-            </div>
-          ))}
+          {task.subtasks.map((st, i) => {
+            const isChecked = !isJulesTile && task.progress > (i + 1) * 30;
+            return (
+              <div key={i} className="flex items-center space-x-2 text-slate-300 text-[11px]">
+                <span className={`w-3 h-3 rounded-sm flex items-center justify-center border text-[9px] ${
+                  isChecked
+                    ? 'bg-wal-emerald/20 border-wal-emerald text-wal-emerald'
+                    : 'border-canvas-bezel text-transparent'
+                }`}>
+                  ✓
+                </span>
+                <span className={isChecked ? 'line-through text-slate-500' : ''}>{st}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
