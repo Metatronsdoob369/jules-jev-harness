@@ -89,7 +89,25 @@ export const INITIAL_TASKS = [
     avgThroughputTps: 165.2,
     subtasks: ['Render token decay graph', 'Expose actual time vs estimate', 'Calculate average throughput TPS'],
     checkpointActive: true,
-    description: 'Hover and click drawer specs that display precise numbers, token stats, and execution health metrics.'
+    description: 'Hover and click drawer specs that display precise numbers, token stats, and execution health metrics.',
+    spectral: {
+      vector: [0.8241, 0.0612, 0.4012, 0.3128, 0.2541],
+      dimensions: {
+        size: 0.8241,
+        complexityHash: 0.0612,
+        structureLines: 0.4012,
+        defDensity: 0.3128,
+        couplingImports: 0.2541,
+      },
+      heat: 0.3707,
+      shatter: 0.0184,
+      coldDistance: 0.1742,
+      recommendation: 'ANCHOR',
+      failureProximity: false,
+      verdict: 'pass',
+      receipt: 'Canonical anchor: Δshatter 0.0184 within safe harbor (<0.05)',
+      computeTimeMs: 0.384,
+    },
   },
 
   // DONE COLUMN

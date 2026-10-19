@@ -54,7 +54,10 @@ export default function OrchestrationHub({
     const v = await executeGate(name, context(tile, extra));
     if (v.mode) setMode(v.mode);
     setLastGateVerdict(v);
-    onPatchTask(tile.id, { lastGateVerdict: v });
+    onPatchTask(tile.id, {
+      lastGateVerdict: v,
+      ...(v.details?.spectral ? { spectral: v.details.spectral } : {}),
+    });
     log(v.verdict, `${name} · ${tile.id}: ${v.action} (${v.reason}) [${describe(v)}]`);
     return v;
   }
@@ -189,7 +192,11 @@ export default function OrchestrationHub({
         doneGateVerdict = await gate('done', tile, { report: sView.report });
         if (doneGateVerdict.action === 'done') {
           riskyGateVerdict = await gate('risky', tile, {
-            pending: { kind: 'merge', detail: `Merge ${sView.report?.prUrl || ''}` },
+            pending: {
+              kind: 'merge',
+              detail: `Merge ${sView.report?.prUrl || ''}: ${sView.report?.summary || ''}`,
+              diff: tile.diff || sView.report?.summary || undefined,
+            },
           });
         }
       }

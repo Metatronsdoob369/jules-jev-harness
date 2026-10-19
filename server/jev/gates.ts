@@ -11,6 +11,7 @@
  */
 import { choice, noul, score } from "@typesafe-ai/sdk";
 import { defineGate, pct, position, sureness } from "./gate.js";
+import { scoreSpectralDiff, type SpectralAuditReport } from "../spectral/fingerprint.js";
 
 /** A tile on the board, as the gates see it. */
 export interface Task {
@@ -29,9 +30,39 @@ export interface Task {
   atWindow?: boolean;
   lastStep?: string;
   /** Something hard to undo that the agent wants to do next. */
-  pending?: { kind: "merge" | "deploy" | "delete" | "spend" | "send" | "other"; detail: string };
+  pending?: {
+    kind: "merge" | "deploy" | "delete" | "spend" | "send" | "other";
+    detail: string;
+    diff?: string;
+    baseline?: string;
+  };
   /** What the agent hands back when it says it's finished. */
   report?: { summary: string; prUrl?: string; testsPassed?: boolean };
+  /** Spectral 5-D audit report if pre-evaluated */
+  spectral?: SpectralAuditReport;
+}
+
+export function evaluateTaskSpectral(task: Task): SpectralAuditReport | null {
+  if (task.spectral) return task.spectral;
+
+  if (task.pending?.diff && task.pending.diff.trim().length > 0) {
+    return scoreSpectralDiff(task.pending.diff, task.pending.baseline);
+  }
+
+  if (task.pending?.detail) {
+    const text = task.pending.detail.trim();
+    const isCodeOrDiff =
+      text.includes("diff --git") ||
+      text.includes("@@") ||
+      /\b(function|def|class|interface|export|import|const|var|let)\b/.test(text) ||
+      (text.includes("\n") && text.length > 50);
+
+    if (isCodeOrDiff) {
+      return scoreSpectralDiff(text, task.pending.baseline);
+    }
+  }
+
+  return null;
 }
 
 /** Board-wide context some gates need. */
@@ -161,6 +192,14 @@ export const risky = defineGate({
   rules: ({ task }: GateInput) => {
     if (!task.pending) return { action: "block", outcome: "escalate", why: "No pending action was given to check" };
     if (task.pending.kind === "delete") return { action: "block", outcome: "escalate", why: "Deletes always go to a person" };
+
+    // ── Spectral Terrain Enforceable Pre-Flight Gate ───────────────
+    // Microsecond geometric check (<5ms): flags fatal cold-map proximity and shatter > 0.15
+    const spectral = evaluateTaskSpectral(task);
+    if (spectral && spectral.verdict === "block") {
+      return { action: "block", outcome: "escalate", why: `Spectral block: ${spectral.receipt}` };
+    }
+
     return null;
   },
   // The plan and the proposed action only. Never tool output or fetched pages:
@@ -174,16 +213,26 @@ export const risky = defineGate({
       "Hard to undo, or affects other people or money.",
     ]),
   },
-  decide: ({ in_plan, blast }) => {
+  decide: ({ in_plan, blast }, { task }) => {
     if (in_plan.noul < 0.5) {
       return { action: "block", confidence: sureness(in_plan.noul), why: "Not in the approved plan" };
     }
+
+    const spectral = evaluateTaskSpectral(task);
+    const isWatch = spectral?.verdict === "watch";
+    const atLeast = blast.score >= 1.5 || isWatch ? "escalate" : undefined;
+
     return {
       action: "run",
       confidence: Math.min(sureness(in_plan.noul), blast.confidence),
-      why: `In the plan · blast ${blast.score.toFixed(1)} of 2`,
-      atLeast: blast.score >= 1.5 ? "escalate" : undefined,
-      details: { blast: Number(position(blast).toFixed(2)) },
+      why: isWatch
+        ? `In the plan · ${spectral?.receipt || "Spectral review required"}`
+        : `In the plan · blast ${blast.score.toFixed(1)} of 2`,
+      atLeast,
+      details: {
+        blast: Number(position(blast).toFixed(2)),
+        ...(spectral ? { spectral: spectral as unknown as import("@typesafe-ai/sdk").JsonValue } : {}),
+      },
     };
   },
   fallback: { action: "block", outcome: "escalate", why: "Held for you" },

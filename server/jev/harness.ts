@@ -42,8 +42,9 @@ export interface GateRequest {
   projects?: { name?: string }[];
   atWindow?: boolean;
   lastStep?: string;
-  pending?: { kind?: string; detail?: string };
+  pending?: { kind?: string; detail?: string; diff?: string; baseline?: string };
   report?: { summary?: string; prUrl?: string; testsPassed?: boolean };
+  spectral?: Task["spectral"];
 }
 
 export function toGateInput(body: GateRequest): GateInput {
@@ -61,7 +62,12 @@ export function toGateInput(body: GateRequest): GateInput {
   };
   if (body.pending) {
     const kind = PENDING_KINDS.find((k) => k === body.pending?.kind) ?? "other";
-    task.pending = { kind, detail: text(body.pending.detail, 2_000) };
+    task.pending = {
+      kind,
+      detail: text(body.pending.detail, 2_000),
+      diff: optional(body.pending.diff, 64_000),
+      baseline: optional(body.pending.baseline, 64_000),
+    };
   }
   if (body.report) {
     task.report = {
@@ -69,6 +75,9 @@ export function toGateInput(body: GateRequest): GateInput {
       prUrl: optional(body.report.prUrl, 300),
       testsPassed: typeof body.report.testsPassed === "boolean" ? body.report.testsPassed : undefined,
     };
+  }
+  if (body.spectral) {
+    task.spectral = body.spectral;
   }
   const projects = (body.projects ?? []).map((p) => text(p?.name, 80)).filter(Boolean).slice(0, 20);
   return { task, board: { projects } };

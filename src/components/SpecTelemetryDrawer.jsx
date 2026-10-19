@@ -1,10 +1,12 @@
 import React from 'react';
-import { X, Activity, Clock, Cpu, Zap, Shield, CheckSquare, Layers, BarChart2, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { X, Activity, Clock, Cpu, Zap, Shield, CheckSquare, Layers, BarChart2, ShieldCheck, AlertTriangle, Radio, Compass } from 'lucide-react';
 
-export default function SpecTelemetryDrawer({ task, project, activeModel, onClose, onUpdateProgress, onMoveTask }) {
+export default function SpecTelemetryDrawer({ task, project, activeModel, onClose, onUpdateProgress, onMoveTask, onPatchTask }) {
   const [replyText, setReplyText] = React.useState('');
   const [isSending, setIsSending] = React.useState(false);
   const [replyStatus, setReplyStatus] = React.useState(null);
+  const [isScanningSpectral, setIsScanningSpectral] = React.useState(false);
+  const [spectralScanError, setSpectralScanError] = React.useState(null);
 
   if (!task) {
     return (
@@ -59,10 +61,34 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
     }
   };
 
+  const handleRunSpectralScan = async () => {
+    if (isScanningSpectral) return;
+    setIsScanningSpectral(true);
+    setSpectralScanError(null);
+    try {
+      const codeToScore = task.diff || task.description || task.title;
+      const res = await fetch('/api/spectral/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: codeToScore }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (onPatchTask) {
+        onPatchTask(task.id, { spectral: data });
+      }
+    } catch (err) {
+      setSpectralScanError(err.message);
+    } finally {
+      setIsScanningSpectral(false);
+    }
+  };
+
   const patronageColor = project?.color || '#00E5FF';
   // Only real verdicts show here: a tile no gate has judged says so.
   const gateVerdict = task.lastGateVerdict || null;
   const sourceLabel = gateVerdict?.source === 'jev' && gateVerdict?.mode === 'stand-in' ? 'stand-in' : gateVerdict?.source;
+  const spectral = task.spectral || gateVerdict?.details?.spectral || null;
 
   return (
     <div className="w-88 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col space-y-4 overflow-y-auto">
@@ -176,6 +202,143 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
         )}
       </div>
       )}
+
+      {/* Spectral Terrain 5-D Geometric Radar Card */}
+      <div className="p-3 rounded-lg bg-canvas-base border border-optic-cyan/40 space-y-3">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="flex items-center space-x-1.5 font-bold text-optic-cyan">
+            <Radio className="w-4 h-4 text-wal-emerald animate-pulse" />
+            <span className="uppercase tracking-wider">SPECTRAL TERRAIN · 5-D RADAR</span>
+          </span>
+
+          {spectral && (
+            <span
+              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                spectral.recommendation === 'ANCHOR'
+                  ? 'bg-wal-emerald/20 text-wal-emerald border border-wal-emerald/40'
+                  : spectral.recommendation === 'REVIEW'
+                  ? 'bg-drift-amber/20 text-drift-amber border border-drift-amber/40'
+                  : 'bg-rose-500/20 text-rose-400 border border-rose-500/40 animate-pulse'
+              }`}
+            >
+              {spectral.recommendation}
+            </span>
+          )}
+        </div>
+
+        {spectral ? (
+          <div className="space-y-2.5">
+            {/* Top Metrics Row */}
+            <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+              <div className="p-1.5 rounded bg-canvas-deck border border-canvas-bezel">
+                <span className="text-slate-500 block text-[9px]">SHATTER (Δ)</span>
+                <span
+                  className={`font-bold text-xs ${
+                    spectral.shatter < 0.05
+                      ? 'text-wal-emerald'
+                      : spectral.shatter <= 0.15
+                      ? 'text-drift-amber'
+                      : 'text-rose-400'
+                  }`}
+                >
+                  {spectral.shatter.toFixed(4)}
+                </span>
+                <span className="text-[9px] text-slate-500 block truncate">
+                  {spectral.shatter < 0.05 ? '< 0.05 Canonical' : spectral.shatter <= 0.15 ? '0.05–0.15 Review' : '> 0.15 Danger'}
+                </span>
+              </div>
+
+              <div className="p-1.5 rounded bg-canvas-deck border border-canvas-bezel">
+                <span className="text-slate-500 block text-[9px]">COLD DISTANCE</span>
+                <span
+                  className={`font-bold text-xs ${
+                    spectral.coldDistance > 0.08 ? 'text-optic-cyan' : 'text-rose-400'
+                  }`}
+                >
+                  {spectral.coldDistance.toFixed(4)}
+                </span>
+                <span className="text-[9px] text-slate-500 block truncate">
+                  {spectral.failureProximity ? 'PROXIMITY ALERT' : 'cold-map-5 clear'}
+                </span>
+              </div>
+
+              <div className="p-1.5 rounded bg-canvas-deck border border-canvas-bezel">
+                <span className="text-slate-500 block text-[9px]">HEAT ENERGY</span>
+                <span className="font-bold text-xs text-drift-amber">
+                  {spectral.heat.toFixed(4)}
+                </span>
+                <span className="text-[9px] text-slate-500 block truncate">
+                  Manhattan res
+                </span>
+              </div>
+            </div>
+
+            {/* 5-D Coordinates with Visual Density Bars */}
+            <div className="p-2 rounded bg-canvas-deck border border-canvas-bezel space-y-1.5">
+              <div className="flex items-center justify-between text-[10px] text-slate-400 border-b border-canvas-bezel pb-1">
+                <span className="font-bold text-slate-300">5-D STRUCTURAL COORDINATES</span>
+                <span className="text-[9px] text-wal-emerald font-mono">{spectral.computeTimeMs}ms (5-D CPU)</span>
+              </div>
+
+              <div className="space-y-1 text-[10px]">
+                {[
+                  { key: 'd1 size', label: 'Size', val: spectral.dimensions.size },
+                  { key: 'd2 hash', label: 'Hash Complexity', val: spectral.dimensions.complexityHash },
+                  { key: 'd3 lines', label: 'Structure Lines', val: spectral.dimensions.structureLines },
+                  { key: 'd4 defs', label: 'Definition Density', val: spectral.dimensions.defDensity },
+                  { key: 'd5 imports', label: 'Coupling (Imports)', val: spectral.dimensions.couplingImports },
+                ].map((dim, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2">
+                    <span className="text-slate-400 w-28 text-[9px] truncate">{dim.key}</span>
+                    <div className="flex-1 bg-canvas-bezel h-1.5 rounded overflow-hidden">
+                      <div
+                        className="h-full bg-optic-cyan transition-all duration-300"
+                        style={{ width: `${Math.min(100, Math.round(dim.val * 100))}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-[9px] text-slate-300 w-12 text-right">
+                      {dim.val.toFixed(4)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Receipt Note */}
+            <div className="text-[10px] text-slate-400 bg-canvas-deep/80 p-2 rounded border border-canvas-bezel leading-relaxed">
+              <span className="text-optic-cyan font-bold block mb-0.5">SPECTRAL RECEIPT:</span>
+              {spectral.receipt}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRunSpectralScan}
+              disabled={isScanningSpectral}
+              className="w-full py-1 rounded bg-canvas-deck text-slate-400 hover:text-optic-cyan border border-canvas-bezel hover:border-optic-cyan/40 font-bold text-[9px] transition-colors"
+            >
+              {isScanningSpectral ? 'Rescanning 5-D Terrain...' : '↻ Rescan 5-D Terrain'}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Pre-flight 5-D structural radar scores code diffs, definition density, and cold-map failure proximity in &lt; 5ms before merging.
+            </p>
+            <button
+              type="button"
+              onClick={handleRunSpectralScan}
+              disabled={isScanningSpectral}
+              className="w-full py-1.5 rounded bg-optic-cyan/20 text-optic-cyan border border-optic-cyan/40 hover:bg-optic-cyan/30 font-bold text-[10px] transition-colors flex items-center justify-center space-x-1.5"
+            >
+              <Radio className="w-3.5 h-3.5" />
+              <span>{isScanningSpectral ? 'Scanning 5-D Terrain...' : 'Run 5-D Spectral Pre-Flight'}</span>
+            </button>
+            {spectralScanError && (
+              <p className="text-[10px] text-rose-400">{spectralScanError}</p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Jules Session Interaction Card */}
       {task.sessionId && (

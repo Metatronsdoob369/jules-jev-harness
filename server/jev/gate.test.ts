@@ -129,3 +129,78 @@ test("intake: an unclear brief goes to clarify", async () => {
   const v = await run(intake, input({ brief: "make the board better" }));
   assert.deepEqual([v.outcome, v.action], ["act", "clarify"]);
 });
+
+test("risky: high-shatter code diff blocks immediately via spectral rule", async () => {
+  const { run, calls } = runnerWith();
+  const base = `
+    import { auth } from './auth';
+    export class Service {
+      run() { return auth(); }
+    }
+  `;
+  const severeDrift = `
+    const x = 123;
+  `;
+  const v = await run(
+    risky,
+    input({
+      pending: {
+        kind: "merge",
+        detail: "Merge severe drift PR",
+        diff: severeDrift,
+        baseline: base,
+      },
+    })
+  );
+  assert.equal(v.source, "rule", "spectral block must fire as an instant rule (<5ms)");
+  assert.deepEqual([v.outcome, v.action], ["escalate", "block"]);
+  assert.match(v.why, /Spectral block/);
+  assert.equal(calls.length, 0, "no LLM tokens spent when spectral terrain detects severe fracture");
+});
+
+test("risky: hollow stub triggers cold-map block rule", async () => {
+  const { run, calls } = runnerWith();
+  const v = await run(
+    risky,
+    input({
+      pending: {
+        kind: "merge",
+        detail: "Merge stub",
+        diff: "// empty room\n",
+      },
+    })
+  );
+  assert.equal(v.source, "rule");
+  assert.deepEqual([v.outcome, v.action], ["escalate", "block"]);
+  assert.match(v.why, /cold-map alert/);
+  assert.equal(calls.length, 0);
+});
+
+test("risky: clean modular code diff passes and includes full 5-D spectral details", async () => {
+  const { run } = runnerWith();
+  const cleanCode = `
+    import { Router } from 'express';
+    export class RouterService {
+      private r = Router();
+      public get() { return this.r; }
+    }
+  `;
+  const v = await run(
+    risky,
+    input({
+      pending: {
+        kind: "merge",
+        detail: "Merge modular router",
+        diff: cleanCode,
+        baseline: cleanCode,
+      },
+    })
+  );
+  assert.deepEqual([v.outcome, v.action], ["confirm", "run"]);
+  assert.ok(v.details?.spectral, "verdict must include 5-D spectral details");
+  const spec = (v.details?.spectral as unknown) as import("../spectral/fingerprint.js").SpectralAuditReport;
+  assert.equal(spec.dimensions.defDensity > 0, true);
+  assert.equal(spec.dimensions.couplingImports > 0, true);
+  assert.equal(spec.shatter, 0);
+  assert.equal(spec.recommendation, "ANCHOR");
+});

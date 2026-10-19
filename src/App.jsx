@@ -239,6 +239,7 @@ export default function App() {
           onClose={() => setSelectedTask(null)}
           onUpdateProgress={handleUpdateTaskProgress}
           onMoveTask={handleMoveTask}
+          onPatchTask={handlePatchTask}
         />
       </div>
 

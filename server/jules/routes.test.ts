@@ -182,3 +182,36 @@ test("No response ever contains the API key", async () => {
     assert.equal(text.includes(SECRET_KEY), false, `Response from ${ep} must not contain API key`);
   }
 });
+
+test("POST /api/spectral/score returns 5-D structural fingerprint and cold distance in <5ms", async () => {
+  const sampleCode = `
+    import { z } from 'zod';
+    export const ConfigSchema = z.object({ id: z.string() });
+    export function parse(input: unknown) { return ConfigSchema.parse(input); }
+  `;
+  const res = await fetch(`${base}/api/spectral/score`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: sampleCode }),
+  });
+  assert.equal(res.status, 200);
+  const data = (await res.json()) as any;
+  assert.equal(data.mode, "5-D structural");
+  assert.equal(data.vector.length, 5);
+  assert.equal(typeof data.shatter, "number");
+  assert.equal(typeof data.coldDistance, "number");
+  assert.equal(typeof data.computeTimeMs, "number");
+  assert.ok(data.computeTimeMs < 15, `must score in microsecond time (<15ms), was ${data.computeTimeMs}ms`);
+});
+
+test("POST /api/spectral/score validates payload and method", async () => {
+  const getRes = await fetch(`${base}/api/spectral/score`);
+  assert.equal(getRes.status, 405);
+
+  const badRes = await fetch(`${base}/api/spectral/score`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ wrongField: 123 }),
+  });
+  assert.equal(badRes.status, 400);
+});

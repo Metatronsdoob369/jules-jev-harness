@@ -18,6 +18,7 @@ import { GATE_NAMES, isGateName, runNamed, toGateInput, type GateRequest } from 
 import { mockJev } from "./jev/mock-jev.js";
 import { JulesClient } from "./jules/client.js";
 import { buildSessionView } from "./jules/session-view.js";
+import { scoreSpectralDiff } from "./spectral/fingerprint.js";
 
 type Next = (err?: unknown) => void;
 
@@ -51,8 +52,9 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
     const path = (req.url ?? "").split("?")[0] ?? "";
     const isGatePath = path === "/api/gate" || path.startsWith("/api/gate/");
     const isJulesPath = path === "/api/jules" || path.startsWith("/api/jules/");
+    const isSpectralPath = path === "/api/spectral" || path.startsWith("/api/spectral/");
 
-    if (!isGatePath && !isJulesPath) return next();
+    if (!isGatePath && !isJulesPath && !isSpectralPath) return next();
 
     // ── Security Guard 1: Host header check (DNS rebinding prevention) ────────
     const hostHeader = (req.headers["host"] ?? "").trim();
@@ -113,6 +115,25 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
       } catch (err) {
         return send(res, 500, { error: err instanceof Error ? err.message : "The gate failed." });
       }
+    }
+
+    // ── Spectral Routes ───────────────────────────────────────────────────────
+    if (isSpectralPath) {
+      if (path === "/api/spectral/score") {
+        if (req.method !== "POST") return send(res, 405, { error: "Use POST to score spectral geometry." });
+        let body: { text?: string; baseline?: string };
+        try {
+          body = JSON.parse(await readBody(req, 64_000));
+        } catch {
+          return send(res, 400, { error: "The body must be JSON under 64 KB." });
+        }
+        if (typeof body?.text !== "string") {
+          return send(res, 400, { error: "Send text to score." });
+        }
+        const report = scoreSpectralDiff(body.text, body.baseline);
+        return send(res, 200, { ...report, mode: "5-D structural" });
+      }
+      return send(res, 404, { error: "Unknown spectral route." });
     }
 
     // ── Jules Routes ──────────────────────────────────────────────────────────

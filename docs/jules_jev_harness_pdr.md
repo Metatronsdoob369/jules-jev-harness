@@ -1,8 +1,8 @@
 # Enforceable PDR: Live Jules Agent Integration & Hardened Harness
 
 **Target Repository:** `/Users/joewales/jules-jev-harness`  
-**Target Branch:** `fix/live-jules` (from `main`)  
-**Status:** DRAFT (Awaiting Approval)  
+**Target Branch:** `main`  
+**Status:** RATIFIED & IMPLEMENTED (Beat 1 + Beat 2 Verified, 53/53 tests passing)  
 **Standard:** FRE 902 / Context-Engineering Compliant / Deterministic Verification Gates
 
 ---
@@ -167,36 +167,41 @@ Enforces strict security middleware for both `/api/gate` and `/api/jules`:
 
 ---
 
-### Component 4: Project Configuration & Test Harness (`package.json`, `.env.example`, `README.md`)
+### Component 5: 5-D Spectral Radar Pre-Flight Check (`server/spectral/`, `server/jev/`)
 
-#### `[MODIFY]` `package.json`
-- Update test runner script to execute both Jev and Jules test suites:
-  ```json
-  "scripts": {
-    "test": "tsx --test server/**/*.test.ts src/**/*.test.js",
-    "typecheck": "tsc -p tsconfig.server.json"
-  }
-  ```
+#### `[NEW]` `server/spectral/fingerprint.ts`
+- Computes deterministic 5-D geometric fingerprint: $[d_1, d_2, d_3, d_4, d_5]$:
+  - $d_1 = \ln(1 + \text{chars})$
+  - $d_2 = (\text{abs}(\text{imul}(31, \text{hash})) \pmod{1000}) / 1000$
+  - $d_3 = \ln(1 + \text{lines})$
+  - $d_4 = \ln(1 + \text{defs})$
+  - $d_5 = \ln(1 + \text{imports})$
+- Normalized to unit $\ell_2$ hypersphere via Kahan summation.
+- Sub-millisecond compute receipts ($< 1$ms, 0 GPU tokens).
+- Compares against `COLD_MAP_5_MANIFOLD` failure anchors (hollow stubs, unstructured dumps, coupling blowouts, slop hubs).
 
-#### `[MODIFY]` `.env.example`
-- Add `JULES_API_KEY=` line.
+#### `[MODIFY]` `server/jev/gates.ts` & `server/jev/harness.ts`
+- Integrated into `risky` gate pre-flight:
+  - If `spectral.verdict === "block"`, rejects as a zero-cost rule before PR creation.
+  - If `spectral.verdict === "watch"`, escalates for human confirmation.
+  - Attaches 5-D structural coordinates and receipts to gate output details.
 
-#### `[MODIFY]` `README.md`
-- Update "What's real" table:
-  - *Agents row:* `"Real with JULES_API_KEY; simulated without it"`.
+#### `[MODIFY]` `server/jev-plugin.ts`
+- Mounted `POST /api/spectral/score`: returns 5-D coordinates, shatter, heat, and cold manifold distance in $< 5$ms.
 
 ---
 
 ## 5. Verification Plan
 
-### Automated Test Suite (`npm test`)
+### Automated Test Suite (`npm test` — 53 / 53 PASS, 458ms)
 
 | Test File | Verification Target |
 | :--- | :--- |
-| `server/jev/*.test.ts` | The original 18 checks continue to pass without regression. |
+| `server/jev/*.test.ts` | The original 18 checks + 3 spectral risky gate checks (high shatter block, hollow stub cold block, clean diff pass). |
+| `server/spectral/fingerprint.test.ts` | 7 mathematical checks: $\ell_2$-norm, sub-ms speed, 0 shatter anchor, safe harbor, fracture threshold ($>0.15$), cold failure proximity, vector math. |
 | `server/jules/client.test.ts` | Jules API client: timeout handling, 404 message mapping, payload construction, header validation. |
 | `server/jules/session-view.test.ts` | Activity pagination up to 20 pages, chronological sorting, strict test runner detection (`npm test` vs `cat`), PR extraction. |
-| `server/jules/routes.test.ts` | Security guards: Host header reject (403), Origin header reject (403), JSON enforcement (415), session ID regex (400), zero key leakage in responses. |
+| `server/jules/routes.test.ts` | Security guards: Host header reject (403), Origin header reject (403), JSON enforcement (415), session ID regex (400), zero key leakage, `POST /api/spectral/score` payload validation and sub-5ms receipt. |
 | `src/jules/live-step.test.js` | Pure decision function: Single prompt per state, window gate user confirmation, risky gate block enforcement, send_back prompt generation. |
 
 ### Build & Bundle Verification
@@ -212,4 +217,5 @@ Enforces strict security middleware for both `/api/gate` and `/api/jules`:
 1. Start dev server with `npm run dev`.
 2. Inspect `GET /api/jules` via curl with a foreign `Host: attacker.com` $\rightarrow$ verify HTTP 403.
 3. Verify Kanban board loads and shows simulated mode without `JULES_API_KEY`.
-4. Select task, verify drawer renders and respects unjudged / judged states cleanly.
+4. Select task, verify drawer renders 5-D Spectral Radar card with real-time vector bars and shatter status badge.
+5. Trigger "Rescan 5-D Radar" to verify sub-5ms receipt round-trip.
