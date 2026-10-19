@@ -9,7 +9,8 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), jevGates(env)],
     server: {
-      port: 3000,
+      port: 3003,
+      strictPort: true,
     },
   };
 });

@@ -1,10 +1,33 @@
-// repo: the GitHub repo each project's work lands in. The route gate holds any task
-// without one (no repo, no dispatch). Replace the placeholder with your real repo.
+// Real production harness projects and telemetry profiles
 export const INITIAL_PROJECTS = [
-  { id: 'proj-01', name: 'AeroSwarm Kernel', color: '#00E5FF', patronage: 'USAF Cyber Command', repo: 'your-org/harness' },
-  { id: 'proj-02', name: 'Jev.ai Orchestrator', color: '#00FF88', patronage: 'Autonomous Intelligence Inc.', repo: 'your-org/harness' },
-  { id: 'proj-03', name: 'Quantum CAD Bridge', color: '#FFB020', patronage: 'Lockheed Tech Labs', repo: 'your-org/harness' },
-  { id: 'proj-04', name: 'Neural Memory Engine', color: '#A855F7', patronage: 'Deep Mind Robotics', repo: 'your-org/harness' },
+  {
+    id: 'proj-discovery',
+    name: 'Discovery Lab (Cross-Agency GQL)',
+    color: '#00E5FF',
+    patronage: 'Open Data Intelligence',
+    repo: 'Metatronsdoob369/jules-jev-harness'
+  },
+  {
+    id: 'proj-jules',
+    name: 'Jules Autonomous Agent',
+    color: '#00FF88',
+    patronage: 'Google DeepMind / Jules',
+    repo: 'Metatronsdoob369/jules-jev-harness'
+  },
+  {
+    id: 'proj-jev',
+    name: 'Jev-Gates Decision Mesh',
+    color: '#FFB020',
+    patronage: 'Deterministic Governance',
+    repo: 'Metatronsdoob369/jules-jev-harness'
+  },
+  {
+    id: 'proj-spectral',
+    name: '5-D Spectral Resonance Engine',
+    color: '#A855F7',
+    patronage: 'Structural Code Integrity',
+    repo: 'Metatronsdoob369/jules-jev-harness'
+  }
 ];
 
 export const INITIAL_LM_MODELS = [
@@ -18,78 +41,102 @@ export const INITIAL_LM_MODELS = [
 export const INITIAL_TASKS = [
   // BACKLOG COLUMN
   {
-    id: 'TSK-101',
-    title: 'Multi-Agent Sub-Task Topology Decomposition',
-    projectId: 'proj-02',
-    column: 'BACKLOG',
-    assignee: 'Jev.ai',
-    progress: 0,
-    tokensUsed: 14200,
-    actualTimeMinutes: 0,
-    avgThroughputTps: 84.2,
-    subtasks: ['Parse user intent', 'Decompose DAG dependencies', 'Assign worker roles'],
-    checkpointActive: false,
-    description: 'Decompose parent requirement into deterministic worker threads managed via Jev sub-agent traffic controller.'
-  },
-  {
-    id: 'TSK-102',
-    title: 'WebGL Shader Optimization for 10k Render Nodes',
-    projectId: 'proj-01',
+    id: 'TSK-JULES-01',
+    title: 'Automated GitHub PR Branching on Gate Confirmation',
+    projectId: 'proj-jules',
     column: 'BACKLOG',
     assignee: 'Jules',
-    progress: 15,
-    tokensUsed: 28400,
-    actualTimeMinutes: 12,
-    avgThroughputTps: 112.5,
-    subtasks: ['Instanced Mesh matrix buffers', 'Custom GLSL fragment noise', 'Frustum culling optimization'],
+    progress: 0,
+    tokensUsed: 12400,
+    actualTimeMinutes: 0,
+    avgThroughputTps: 92.4,
+    subtasks: [
+      'Authenticate with GitHub App installation',
+      'Create ephemeral worktree branch from main',
+      'Commit signed code diffs and open draft pull request'
+    ],
     checkpointActive: true,
-    description: 'Accelerate Kanban 3D card rendering using InstancedMesh matrix packing to ensure 60fps on desktop.'
+    description: 'Autonomous Git workflow executing remote pull request branching once Jev verification gates clear.',
+    repo: 'Metatronsdoob369/jules-jev-harness'
   },
-  
+  {
+    id: 'TSK-DISC-03',
+    title: 'Cross-Agency Graph Discovery: USDA Crops vs BLS Food CPI',
+    projectId: 'proj-discovery',
+    column: 'BACKLOG',
+    assignee: 'Jev.ai + Jules',
+    progress: 10,
+    tokensUsed: 18200,
+    actualTimeMinutes: 5,
+    avgThroughputTps: 108.0,
+    subtasks: [
+      'Ingest USDA QuickStats monthly corn/soy yields',
+      'Join on TEMPORAL_MONTH with BLS Consumer Price Index',
+      'Calculate 90-day lead-lag correlation matrix'
+    ],
+    checkpointActive: false,
+    description: 'Autonomous crosswalk join linking agricultural supply shifts to downstream urban retail food inflation.',
+    repo: 'Metatronsdoob369/jules-jev-harness'
+  },
+
   // IN PROGRESS COLUMN
   {
-    id: 'TSK-201',
-    title: 'Jev.ai Sub-Agent Traffic Router & Skill Circuit Wire',
-    projectId: 'proj-02',
+    id: 'TSK-DISC-02',
+    title: 'Time-Series Join Bridge: Treasury Debt vs FRED 10Y Yields',
+    projectId: 'proj-discovery',
     column: 'IN_PROGRESS',
-    assignee: 'Jev.ai + Jules',
-    progress: 68,
-    tokensUsed: 89400,
-    actualTimeMinutes: 45,
-    avgThroughputTps: 142.8,
-    subtasks: ['Hook event emitter', 'Register memory buffers', 'Inject context instructions'],
-    checkpointActive: false,
-    description: 'Wire Jev.ai as the all-star do-it-all teammates for task breakdown, traffic control, and execution alignment.'
+    assignee: 'Jules + Jev',
+    progress: 65,
+    tokensUsed: 42100,
+    actualTimeMinutes: 24,
+    avgThroughputTps: 135.5,
+    subtasks: [
+      'Stream daily Treasury Fiscal Data public debt issuance',
+      'Align on TEMPORAL_DATE with FRED DGS10 benchmark series',
+      'Assert statistical significance threshold (p <= 0.01)'
+    ],
+    checkpointActive: true,
+    description: 'Empirical cross-agency macro correlation pipeline testing lead-indicator shifts between sovereign issuance and market yields.',
+    repo: 'Metatronsdoob369/jules-jev-harness'
   },
   {
-    id: 'TSK-202',
-    title: 'LM Pre-Plan Interruption Checkpoint Interceptor',
-    projectId: 'proj-03',
+    id: 'TSK-JEV-01',
+    title: '5-Gate Deterministic Verification Mesh & Live Streamer',
+    projectId: 'proj-jev',
     column: 'IN_PROGRESS',
-    assignee: 'Jules',
-    progress: 42,
-    tokensUsed: 53100,
-    actualTimeMinutes: 28,
-    avgThroughputTps: 98.4,
-    subtasks: ['Build pre-plan pause trap', 'Hook user secret keys', 'Allow mid-flight model swapping'],
-    checkpointActive: true,
-    description: 'Predefined pause breaks at each project phase where user selected LMs can step in to critique or approve.'
+    assignee: 'Jev.ai',
+    progress: 82,
+    tokensUsed: 68400,
+    actualTimeMinutes: 38,
+    avgThroughputTps: 148.2,
+    subtasks: [
+      'Intake clarity & anti-ambiguity gate',
+      'Window state & pre-execution confirmation trap',
+      'Zero-hallucination deterministic rule evaluation'
+    ],
+    checkpointActive: false,
+    description: 'Multi-tiered safety harness evaluating code proposals against strict non-vacuity and confidence policies.',
+    repo: 'Metatronsdoob369/jules-jev-harness'
   },
 
   // REVIEW COLUMN
   {
-    id: 'TSK-301',
-    title: 'High-Density Spec Panel & Micro-Telemetry Readouts',
-    projectId: 'proj-04',
+    id: 'TSK-SPEC-01',
+    title: '5-D Spectral Resonance Pre-Flight on Risky Diff Gate',
+    projectId: 'proj-spectral',
     column: 'REVIEW',
     assignee: 'Jev.ai',
-    progress: 90,
-    tokensUsed: 112900,
-    actualTimeMinutes: 62,
-    avgThroughputTps: 165.2,
-    subtasks: ['Render token decay graph', 'Expose actual time vs estimate', 'Calculate average throughput TPS'],
+    progress: 92,
+    tokensUsed: 54100,
+    actualTimeMinutes: 31,
+    avgThroughputTps: 162.0,
+    subtasks: [
+      'Compute 5-D unit fingerprint (size, complexity, structure, density, coupling)',
+      'Calculate shatter displacement against baseline anchor',
+      'Block high-fracture diffs (shatter > 0.15) before human review'
+    ],
     checkpointActive: true,
-    description: 'Hover and click drawer specs that display precise numbers, token stats, and execution health metrics.',
+    description: 'Sub-millisecond structural diff radar safeguarding pull request boundaries from catastrophic code drift.',
     spectral: {
       vector: [0.8241, 0.0612, 0.4012, 0.3128, 0.2541],
       dimensions: {
@@ -108,28 +155,34 @@ export const INITIAL_TASKS = [
       receipt: 'Canonical anchor: Δshatter 0.0184 within safe harbor (<0.05)',
       computeTimeMs: 0.384,
     },
+    repo: 'Metatronsdoob369/jules-jev-harness'
   },
 
   // DONE COLUMN
   {
-    id: 'TSK-401',
-    title: 'Stealth Black Industrial Canvas & Grid Initialization',
-    projectId: 'proj-01',
+    id: 'TSK-DISC-01',
+    title: 'API-All-the-X Catalog & BigQuery ISO GQL DDL Export',
+    projectId: 'proj-discovery',
     column: 'DONE',
-    assignee: 'Jules',
+    assignee: 'Jules + Jev',
     progress: 100,
-    tokensUsed: 44200,
-    actualTimeMinutes: 30,
-    avgThroughputTps: 130.0,
-    subtasks: ['Configure Space Grotesk & JetBrains Mono', 'Setup cyan/emerald HUD glow', 'Establish 3D coordinate plane'],
+    tokensUsed: 88500,
+    actualTimeMinutes: 42,
+    avgThroughputTps: 154.0,
+    subtasks: [
+      'Index 14 canonical join keys (SPATIAL, CORPORATE, TEMPORAL)',
+      'Parse 9 cross-agency federal & financial registries',
+      'Generate compliant CREATE OR REPLACE PROPERTY GRAPH DDL'
+    ],
     checkpointActive: false,
-    description: 'Established the low-illumination aerospace mission deck base canvas with grid matrix lines.'
+    description: 'Completed baseline discovery engine cataloging disparate public data endpoints and join topology.',
+    repo: 'Metatronsdoob369/jules-jev-harness'
   }
 ];
 
 export const INITIAL_CHECKPOINTS = [
   { id: 'chk-1', stage: 'Planning & Intent Analysis', enabled: true, trigger: 'Prior to task breakdown', description: 'Requires Jev.ai to present DAG decomposition before code generation starts.' },
-  { id: 'chk-2', stage: 'Architecture Design & Sketch', enabled: true, trigger: 'After visual sketch generation', description: 'Pauses pipeline to allow external LM critique of 2D/3D system architecture diagrams.' },
-  { id: 'chk-3', stage: 'Code Synthesis & Verification', enabled: false, trigger: 'Post unit test pass', description: 'Pauses before git commit to allow secondary model code auditing.' },
-  { id: 'chk-4', stage: 'Deployment & Render Build', enabled: true, trigger: 'Pre-flight deployment', description: 'Verifies environment variables and security tokens before cloud deploy.' }
+  { id: 'chk-2', stage: 'Architecture Design & Join Path', enabled: true, trigger: 'After join path synthesis', description: 'Pauses pipeline to verify crosswalk bridges between disparate agency endpoints.' },
+  { id: 'chk-3', stage: '5-D Spectral Pre-Flight Scan', enabled: true, trigger: 'Post code synthesis', description: 'Scores diff shatter and cold-map failure proximity before human review.' },
+  { id: 'chk-4', stage: 'Production Merge & PR Dispatch', enabled: true, trigger: 'Pre-flight merge', description: 'Verifies verified acceptance sub-items and test suite assertions before merge.' }
 ];

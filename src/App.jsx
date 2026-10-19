@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   INITIAL_PROJECTS,
   INITIAL_LM_MODELS,
@@ -35,15 +35,32 @@ import {
 
 export default function App() {
   // Application State
-  const [tasks, setTasks] = useState(INITIAL_TASKS);
+  const [tasks, setTasks] = useState(() => {
+    try {
+      const saved = localStorage.getItem('harness_tasks_v3');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_TASKS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('harness_tasks_v3', JSON.stringify(tasks));
+    } catch {}
+  }, [tasks]);
+
   const [projects] = useState(INITIAL_PROJECTS);
   const [models] = useState(INITIAL_LM_MODELS);
   const [checkpoints, setCheckpoints] = useState(INITIAL_CHECKPOINTS);
   
-  const [selectedTask, setSelectedTask] = useState(INITIAL_TASKS[1]); // Default selected task
+  const [selectedTask, setSelectedTask] = useState(null);
   const [activeModel, setActiveModel] = useState(INITIAL_LM_MODELS[0]);
   const [isExecuting, setIsExecuting] = useState(true);
   const [viewMode, setViewMode] = useState('2D'); // '2D' default for clarity; toggleable to '3D'
+  const [showArchived, setShowArchived] = useState(false);
 
   // Modal / Drawer Toggles
   const [isLmModalOpen, setIsLmModalOpen] = useState(false);
@@ -56,6 +73,40 @@ export default function App() {
   // Handlers
   const handleSelectTask = (task) => {
     setSelectedTask(task);
+  };
+
+  const handleArchiveTask = (taskId) => {
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, archived: !t.archived } : t))
+    );
+    if (selectedTask?.id === taskId) {
+      setSelectedTask((prev) => (prev ? { ...prev, archived: !prev.archived } : null));
+    }
+  };
+
+  const handleDeleteTask = (taskId) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    if (selectedTask?.id === taskId) {
+      setSelectedTask(null);
+    }
+  };
+
+  const handleClearFinishedTasks = () => {
+    setTasks((prev) =>
+      prev.map((t) => (t.column === 'DONE' ? { ...t, archived: true } : t))
+    );
+    if (selectedTask?.column === 'DONE') {
+      setSelectedTask((prev) => (prev ? { ...prev, archived: true } : null));
+    }
+  };
+
+  const handleResetDefaults = () => {
+    try {
+      localStorage.removeItem('harness_tasks_v3');
+    } catch {}
+    setTasks(INITIAL_TASKS);
+    setSelectedTask(null);
+    setShowArchived(false);
   };
 
   const handleDispatchDiscoveryTask = (task) => {
@@ -221,7 +272,7 @@ export default function App() {
             >
               {viewMode === '3D' ? (
                 <KanbanCanvas3D
-                  tasks={tasks}
+                  tasks={tasks.filter((t) => !t.archived)}
                   projects={projects}
                   selectedTask={selectedTask}
                   onSelectTask={handleSelectTask}
@@ -234,6 +285,12 @@ export default function App() {
                   selectedTask={selectedTask}
                   onSelectTask={handleSelectTask}
                   onMoveTask={handleMoveTask}
+                  onArchiveTask={handleArchiveTask}
+                  onDeleteTask={handleDeleteTask}
+                  onClearFinished={handleClearFinishedTasks}
+                  showArchived={showArchived}
+                  onToggleShowArchived={setShowArchived}
+                  onResetDefaults={handleResetDefaults}
                 />
               )}
             </ErrorBoundary>
@@ -265,6 +322,8 @@ export default function App() {
           onUpdateProgress={handleUpdateTaskProgress}
           onMoveTask={handleMoveTask}
           onPatchTask={handlePatchTask}
+          onArchiveTask={handleArchiveTask}
+          onDeleteTask={handleDeleteTask}
         />
       </div>
 
