@@ -19,6 +19,7 @@ import { mockJev } from "./jev/mock-jev.js";
 import { JulesClient } from "./jules/client.js";
 import { buildSessionView } from "./jules/session-view.js";
 import { scoreSpectralDiff } from "./spectral/fingerprint.js";
+import { defaultDiscoveryGraph } from "./discovery/graph.js";
 
 type Next = (err?: unknown) => void;
 
@@ -53,8 +54,9 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
     const isGatePath = path === "/api/gate" || path.startsWith("/api/gate/");
     const isJulesPath = path === "/api/jules" || path.startsWith("/api/jules/");
     const isSpectralPath = path === "/api/spectral" || path.startsWith("/api/spectral/");
+    const isDiscoveryPath = path === "/api/discovery" || path.startsWith("/api/discovery/");
 
-    if (!isGatePath && !isJulesPath && !isSpectralPath) return next();
+    if (!isGatePath && !isJulesPath && !isSpectralPath && !isDiscoveryPath) return next();
 
     // ── Security Guard 1: Host header check (DNS rebinding prevention) ────────
     const hostHeader = (req.headers["host"] ?? "").trim();
@@ -136,7 +138,81 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
       return send(res, 404, { error: "Unknown spectral route." });
     }
 
-    // ── Jules Routes ──────────────────────────────────────────────────────────
+    // ── Discovery Routes (Beat 3) ─────────────────────────────────────────────
+    if (isDiscoveryPath) {
+      if (path === "/api/discovery/stats") {
+        if (req.method !== "GET") return send(res, 405, { error: "Use GET here." });
+        return send(res, 200, defaultDiscoveryGraph.getStats());
+      }
+
+      if (path === "/api/discovery/hypotheses") {
+        if (req.method !== "GET") return send(res, 405, { error: "Use GET here." });
+        return send(res, 200, {
+          hypotheses: defaultDiscoveryGraph.hypotheses,
+          stats: defaultDiscoveryGraph.getStats(),
+        });
+      }
+
+      if (path === "/api/discovery/hypotheses/synthesize") {
+        if (req.method !== "POST") return send(res, 405, { error: "Use POST to synthesize hypotheses." });
+        const synthesized = defaultDiscoveryGraph.synthesizeHypotheses(15);
+        return send(res, 200, {
+          hypotheses: synthesized,
+          stats: defaultDiscoveryGraph.getStats(),
+        });
+      }
+
+      if (path === "/api/discovery/gql") {
+        if (req.method !== "GET") return send(res, 405, { error: "Use GET here." });
+        const ddl = defaultDiscoveryGraph.exportToBigQueryGqlDDL();
+        return send(res, 200, { ddl });
+      }
+
+      if (path === "/api/discovery/dispatch") {
+        if (req.method !== "POST") return send(res, 405, { error: "Use POST to dispatch." });
+        let body: { hypothesisId?: string };
+        try {
+          body = JSON.parse(await readBody(req, 64_000));
+        } catch {
+          return send(res, 400, { error: "The body must be JSON under 64 KB." });
+        }
+        const hyp = defaultDiscoveryGraph.hypotheses.find((h) => h.id === body.hypothesisId);
+        if (!hyp) {
+          return send(res, 404, { error: "Hypothesis not found in active catalog." });
+        }
+
+        const candidateTask = {
+          id: `TSK-${Math.floor(400 + Math.random() * 99)}`,
+          title: hyp.title,
+          lane: "READY",
+          state: "ready",
+          project: "Discovery Lab (Phase 2)",
+          repo: "Metatronsdoob369/jules-jev-harness",
+          branch: `exp/${hyp.id.replace(/[^a-z0-9_-]/g, "_")}`,
+          brief: `${hyp.rationale}\n\nGround Truth: Test statistical significance of lead-indicator shift (Lead: ${hyp.estimatedLeadTimeDays} days). P-value must satisfy p <= 0.01.`,
+          acceptanceCriteria: [
+            `Ingest test slices from ${hyp.sourceEndpoint.name} and ${hyp.targetEndpoint.name}`,
+            `Align time-series on join axis [${hyp.joinPath.fromKey}${
+              hyp.joinPath.viaCrosswalk ? ` -> ${hyp.joinPath.toKey}` : ""
+            }]`,
+            `Calculate Pearson/Spearman r and p-value assertion (p <= 0.01)`,
+            `Generate reproducible backtest report in reports/`,
+          ],
+          pending: {
+            diff: `# Discovery Ingestion Adapter: ${hyp.sourceEndpoint.name} + ${hyp.targetEndpoint.name}\nimport { queryFiscalData } from "us-gov-open-data-mcp/sdk/treasury";\n// Join on: ${hyp.joinPath.fromKey}\nexport async function runBacktest() { /* statistical assertions */ }`,
+            baseline: `# Baseline Discovery Adapter\nexport async function runBacktest() { return { pValue: 1.0 }; }`,
+          },
+        };
+
+        return send(res, 200, {
+          success: true,
+          task: candidateTask,
+          hypothesis: hyp,
+        });
+      }
+
+      return send(res, 404, { error: "Unknown discovery route." });
+    }
     if (isJulesPath) {
       // GET /api/jules
       if (path === "/api/jules") {

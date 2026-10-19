@@ -14,6 +14,7 @@ import LmSelectorModal from './components/LmSelectorModal';
 import ChatDrawer from './components/ChatDrawer';
 import SketchCanvasModal from './components/SketchCanvasModal';
 import ResearchBrowserModal from './components/ResearchBrowserModal';
+import DiscoveryGraphModal from './components/DiscoveryGraphModal';
 
 import {
   Layers,
@@ -27,7 +28,8 @@ import {
   Box,
   LayoutGrid,
   Shield,
-  Activity
+  Activity,
+  Network
 } from 'lucide-react';
 
 export default function App() {
@@ -47,11 +49,18 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isSketchOpen, setIsSketchOpen] = useState(false);
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
+  const [isDiscoveryOpen, setIsDiscoveryOpen] = useState(false);
   const [apiKeys, setApiKeys] = useState({});
 
   // Handlers
   const handleSelectTask = (task) => {
     setSelectedTask(task);
+  };
+
+  const handleDispatchDiscoveryTask = (task) => {
+    setTasks((prev) => [task, ...prev]);
+    setSelectedTask(task);
+    setViewMode('2D');
   };
 
   const handleUpdateTaskProgress = (taskId, newProgress) => {
@@ -177,6 +186,15 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setIsDiscoveryOpen(true)}
+            className="px-2.5 py-1 rounded bg-canvas-deck border border-canvas-bezel hover:border-optic-cyan text-slate-300 hover:text-optic-cyan flex items-center space-x-1.5 font-bold transition-all"
+            title="Open BigQuery Graph Discovery Engine"
+          >
+            <Network className="w-3.5 h-3.5 text-optic-cyan" />
+            <span>DISCOVERY GRAPH</span>
+          </button>
+
+          <button
             onClick={() => setIsChatOpen(!isChatOpen)}
             className={`px-2.5 py-1 rounded flex items-center space-x-1.5 font-bold border transition-all ${
               isChatOpen
@@ -273,6 +291,12 @@ export default function App() {
         isOpen={isChatOpen}
         onClose={() => setIsChatOpen(false)}
         activeModel={activeModel}
+      />
+
+      <DiscoveryGraphModal
+        isOpen={isDiscoveryOpen}
+        onClose={() => setIsDiscoveryOpen(false)}
+        onDispatchTask={handleDispatchDiscoveryTask}
       />
     </div>
   );

@@ -1,12 +1,12 @@
-# Walkthrough: Live Google Jules Integration & 5-D Spectral Decision Gates
+# Walkthrough: Live Google Jules Integration, 5-D Spectral Radar & Graph Discovery Engine
 
-We have implemented and verified the live Google Jules integration and **Beat 2: Spectral Terrain 5-D Geometric Radar** in [jules-jev-harness](file:///Users/joewales/jules-jev-harness) on branch `main`, strictly governed by TypeSafe's Jev decision gates (`intake`, `route`, `window`, `risky`, `done`).
+We have implemented and verified the live Google Jules integration, **Beat 2: Spectral Terrain 5-D Geometric Radar**, and **Beat 3: Autonomous Multi-Variable Data Discovery Engine (BigQuery Property Graph ISO GQL standard)** in [jules-jev-harness](file:///Users/joewales/jules-jev-harness) on branch `main`, strictly governed by TypeSafe's Jev decision gates (`intake`, `route`, `window`, `risky`, `done`).
 
 ---
 
 ## 1. Accomplishments & Changes Made
 
-### Server Layer (`server/jules/` & `server/spectral/`)
+### Server Layer (`server/jules/`, `server/spectral/`, & `server/discovery/`)
 - **[client.ts](file:///Users/joewales/jules-jev-harness/server/jules/client.ts):** Production Google Jules API (v1alpha) client. Implements automatic pagination for sources and activities (up to 20 pages), explicit 30s timeouts, clean 404 error mapping (`"repo not connected to Jules"`, `"Jules session not found"`), and zero key leakage (key never passes to client).
 - **[session-view.ts](file:///Users/joewales/jules-jev-harness/server/jules/session-view.ts):** Normalizes messy REST activities into harness state. Enforces chronological sort by `createTime` to handle out-of-order delivery, extracts `lastStep`, derives progress (0-100), extracts PR URLs, and applies a strict whitelist regex to `runCommand` steps (`npm test`, `vitest`, `pytest`, `cargo test`, `go test`, etc.) so auxiliary tool commands (`cat`, `typecheck`) do not falsely satisfy test acceptance.
 - **[mock-jules.ts](file:///Users/joewales/jules-jev-harness/server/jules/mock-jules.ts):** Wire-format REST mock server for tests. Zero real Google API calls in test suite.
@@ -20,12 +20,17 @@ We have implemented and verified the live Google Jules integration and **Beat 2:
     - If `spectral.verdict === "block"` (shatter $> 0.15$ or cold failure proximity), **instantly blocks as a zero-cost rule** (`action: "block"`, `outcome: "escalate"`), preventing corrupted diffs or slop hubs from reaching PR dispatch.
     - If `spectral.verdict === "watch"` ($0.05 \le \text{shatter} \le 0.15$), escalates to affirmative human review.
     - Clean diffs ($\text{shatter} < 0.05$) pass with verified 5-D receipts in gate verdict details.
+- **[parser.ts](file:///Users/joewales/jules-jev-harness/server/discovery/parser.ts) & [graph.ts](file:///Users/joewales/jules-jev-harness/server/discovery/graph.ts) (Beat 3):**
+  - **Join-Key Schema Registry:** Indexes 14 canonical join keys (`SPATIAL_ZIP5`, `SPATIAL_GEOID`, `CORPORATE_CIK`, `CORPORATE_EIN`, `TEMPORAL_DATE`, `MACRO_SERIES_ID`, etc.) and 6 crosswalk transformation bridges (HUD ZIP-to-Tract, SEC-IRS EIN-to-CIK, SAM UEI-to-EIN).
+  - **Dynamic Ingestion:** Ingests 500+ endpoints from `API-All-the-X` and 22 zero-key APIs from `us-gov-open-data`.
+  - **Hypothesis Synthesizer:** Traverses property graph to find multi-hop join paths between disparate agencies and generates predictive candidate correlation briefs.
+  - **BigQuery GQL Export:** Generates production-ready `CREATE OR REPLACE PROPERTY GRAPH` GoogleSQL DDL adhering to the ISO GQL standard.
 - **[jev-plugin.ts](file:///Users/joewales/jules-jev-harness/server/jev-plugin.ts):** Hardened Vite dev middleware with:
   - Host validation (strictly `127.0.0.1`, `localhost`, or opt-in `JEV_ALLOW_LAN`) to block DNS rebinding.
   - Origin validation to block cross-site request forgery.
   - Strict Content-Type enforcement (`application/json`) on mutating POST requests.
   - Strict regex parameter validation (`^[A-Za-z0-9_-]{1,64}$`, `owner/repo`).
-  - Endpoints: `GET /api/jules`, `POST /api/jules/dispatch`, `POST /api/jules/:id/approve`, `POST /api/jules/:id/message`, `GET /api/jules/:id`, and `POST /api/spectral/score` (sub-millisecond geometric diff scoring).
+  - Endpoints: `GET /api/jules`, `POST /api/jules/dispatch`, `POST /api/jules/:id/approve`, `POST /api/jules/:id/message`, `GET /api/jules/:id`, `POST /api/spectral/score`, `GET /api/discovery/stats`, `GET /api/discovery/hypotheses`, `POST /api/discovery/hypotheses/synthesize`, `GET /api/discovery/gql`, and `POST /api/discovery/dispatch`.
 
 ### Frontend Layer (`src/`)
 - **[live-step.js](file:///Users/joewales/jules-jev-harness/src/jules/live-step.js):** Pure state transition engine:
@@ -51,20 +56,28 @@ We have implemented and verified the live Google Jules integration and **Beat 2:
   - Suppresses generic `"Move the tile with Stage Control"` banner on Jules tasks.
   - Keeps acceptance subtasks unticked until 100% completed.
   - Displays PR links directly when open.
+- **[DiscoveryGraphModal.jsx](file:///Users/joewales/jules-jev-harness/src/components/DiscoveryGraphModal.jsx) (Beat 3):**
+  - **Data Discovery Engine · Property Graph:** Dedicated modal providing:
+    - Counter ribbon for indexed endpoints (500+), agencies, canonical join keys (14), and crosswalk bridges (6).
+    - Candidate hypothesis cards with visual join paths (`[Source] -> [Bridge] -> [Target]`), lead time estimates, and confidence scores.
+    - 1-click **"Dispatch to Jules"** button that mounts the hypothesis directly into the Kanban lane.
+    - BigQuery GQL DDL inspector with 1-click copy to clipboard.
+    - Canonical join-key registry and crosswalk transformation tables.
 
 ---
 
 ## 2. Verification Gates Passed
 
-### Automated Tests: 53 / 53 PASS (458ms)
+### Automated Tests: 62 / 62 PASS (668ms)
 ```bash
 npm test
 ```
+- **Discovery Graph Engine (6 checks):** Canonical join keys, crosswalk bridges, endpoint ingestion, 1-hop & 2-hop path traversal, hypothesis synthesizer, BigQuery GoogleSQL GQL DDL generation.
 - **Jev Gates (21 checks):** Rules, fallbacks, caps, adapter, server route, and Beat 2 Spectral rules (high shatter blocking, hollow stub cold-map blocking, clean diff pass with 5-D details).
 - **Spectral Radar Engine (7 checks):** Unit $\ell_2$ hypersphere norm, sub-millisecond execution, 0-shatter anchor, safe harbor, structural fracture threshold ($>0.15$), cold-map proximity, cosine and shatter math.
 - **Jules Client (5 checks):** Auth header, 404 mapping, listSources pagination, createSession, approvePlan.
 - **Session View (4 checks):** Out-of-order sorting, multi-page lastStep, test command whitelist, state mapping.
-- **Route Security & Spectral Route (9 checks):** Host/Origin CSRF rejection, Content-Type guard, parameter regex, 404 mapping, zero key leakage in responses, POST `/api/spectral/score` payload validation and sub-5ms receipt.
+- **Route Security & Discovery Routes (12 checks):** Host/Origin CSRF rejection, Content-Type guard, parameter regex, 404 mapping, zero key leakage in responses, POST `/api/spectral/score`, GET `/api/discovery/stats`, GET `/api/discovery/hypotheses`, POST `/api/discovery/dispatch`, GET `/api/discovery/gql`.
 - **Live Step Engine (7 checks):** Question deduping, window confirmation, risky gate block, done gate send-back.
 
 ### Server TypeScript Typecheck: PASS (0 errors)
@@ -88,6 +101,6 @@ grep -r "JULES_API_KEY\|jules.googleapis.com" dist/
 ## 3. Git Status & Remote Tracking
 
 - Branch: `main`
-- Verification Suite: 53 tests passing (0 failures)
+- Verification Suite: 62 tests passing (0 failures)
 - Remote Repository: `https://github.com/Metatronsdoob369/jules-jev-harness.git`
 - Persisted to Hive: [[_jules-jev-harness-Hub.md](file:///Users/joewales/Hive/10-Projects/jules-jev-harness/_jules-jev-harness-Hub.md)] and [SESSION_LOG.md](file:///Users/joewales/Hive/20-Session-Log/SESSION_LOG.md).

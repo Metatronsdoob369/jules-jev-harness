@@ -215,3 +215,43 @@ test("POST /api/spectral/score validates payload and method", async () => {
   });
   assert.equal(badRes.status, 400);
 });
+
+test("GET /api/discovery/stats returns indexed endpoints and join keys", async () => {
+  const res = await fetch(`${base}/api/discovery/stats`);
+  assert.equal(res.status, 200);
+  const data = (await res.json()) as any;
+  assert.ok(data.totalEndpoints > 20);
+  assert.ok(data.totalJoinKeys >= 12);
+  assert.ok(data.totalCrosswalkBridges >= 5);
+});
+
+test("GET /api/discovery/hypotheses and POST /api/discovery/dispatch create executable Jules task", async () => {
+  const hypRes = await fetch(`${base}/api/discovery/hypotheses`);
+  assert.equal(hypRes.status, 200);
+  const hypData = (await hypRes.json()) as any;
+  assert.ok(hypData.hypotheses.length > 0);
+  const candidate = hypData.hypotheses[0];
+
+  const dispatchRes = await fetch(`${base}/api/discovery/dispatch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hypothesisId: candidate.id }),
+  });
+  assert.equal(dispatchRes.status, 200);
+  const dispatchData = (await dispatchRes.json()) as any;
+  assert.equal(dispatchData.success, true);
+  assert.ok(dispatchData.task.id.startsWith("TSK-"));
+  assert.ok(dispatchData.task.branch.startsWith("exp/"));
+  assert.ok(dispatchData.task.pending.diff.length > 0);
+  assert.equal(dispatchData.task.acceptanceCriteria.length, 4);
+});
+
+test("GET /api/discovery/gql returns valid BigQuery GQL DDL", async () => {
+  const res = await fetch(`${base}/api/discovery/gql`);
+  assert.equal(res.status, 200);
+  const data = (await res.json()) as any;
+  assert.ok(data.ddl.includes("CREATE OR REPLACE PROPERTY GRAPH"));
+  assert.ok(data.ddl.includes("NODE TABLES"));
+  assert.ok(data.ddl.includes("EDGE TABLES"));
+});
+
