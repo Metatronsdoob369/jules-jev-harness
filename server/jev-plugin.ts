@@ -184,9 +184,23 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
         const candidateTask = {
           id: `TSK-${Math.floor(400 + Math.random() * 99)}`,
           title: hyp.title,
+          column: "BACKLOG",
           lane: "READY",
           state: "ready",
+          projectId: "proj-02",
           project: "Discovery Lab (Phase 2)",
+          assignee: "Jules + Jev",
+          progress: 0,
+          tokensUsed: 14500,
+          actualTimeMinutes: 0,
+          avgThroughputTps: 110,
+          subtasks: [
+            `Ingest test slices from ${hyp.sourceEndpoint.name} and ${hyp.targetEndpoint.name}`,
+            `Align time-series on join axis [${hyp.joinPath.fromKey}${
+              hyp.joinPath.viaCrosswalk ? ` -> ${hyp.joinPath.toKey}` : ""
+            }]`,
+            `Calculate Pearson/Spearman r (assertion p <= 0.01)`
+          ],
           repo: "Metatronsdoob369/jules-jev-harness",
           branch: `exp/${hyp.id.replace(/[^a-z0-9_-]/g, "_")}`,
           brief: `${hyp.rationale}\n\nGround Truth: Test statistical significance of lead-indicator shift (Lead: ${hyp.estimatedLeadTimeDays} days). P-value must satisfy p <= 0.01.`,

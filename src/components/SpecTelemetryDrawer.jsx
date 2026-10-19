@@ -10,11 +10,11 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
 
   if (!task) {
     return (
-      <div className="w-80 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col justify-center items-center text-center text-slate-500 space-y-2">
+      <div className="w-80 md:w-96 flex-shrink-0 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col justify-center items-center text-center text-slate-500 space-y-2">
         <Activity className="w-8 h-8 text-canvas-bezel animate-pulse" />
         <p className="font-bold text-slate-400">NO TASK SELECTED</p>
         <p className="text-[11px] leading-relaxed">
-          Select any 3D/2D task tile on the board to disclose high-density token, sureness confidence, and decision gate specs.
+          Select any task tile on the board to inspect telemetry, sureness confidence, and decision gate specs.
         </p>
       </div>
     );
@@ -91,7 +91,7 @@ export default function SpecTelemetryDrawer({ task, project, activeModel, onClos
   const spectral = task.spectral || gateVerdict?.details?.spectral || null;
 
   return (
-    <div className="w-88 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col space-y-4 overflow-y-auto">
+    <div className="w-96 md:w-[420px] max-w-full flex-shrink-0 h-full bg-canvas-deck border-l border-canvas-bezel p-4 font-mono text-xs flex flex-col space-y-4 overflow-y-auto">
       {/* Header */}
       <div className="flex items-start justify-between border-b border-canvas-bezel pb-3">
         <div className="space-y-1">

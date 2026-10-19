@@ -15,6 +15,7 @@ import ChatDrawer from './components/ChatDrawer';
 import SketchCanvasModal from './components/SketchCanvasModal';
 import ResearchBrowserModal from './components/ResearchBrowserModal';
 import DiscoveryGraphModal from './components/DiscoveryGraphModal';
+import ErrorBoundary from './components/ErrorBoundary';
 
 import {
   Layers,
@@ -42,7 +43,7 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState(INITIAL_TASKS[1]); // Default selected task
   const [activeModel, setActiveModel] = useState(INITIAL_LM_MODELS[0]);
   const [isExecuting, setIsExecuting] = useState(true);
-  const [viewMode, setViewMode] = useState('3D'); // '3D' | '2D'
+  const [viewMode, setViewMode] = useState('2D'); // '2D' default for clarity; toggleable to '3D'
 
   // Modal / Drawer Toggles
   const [isLmModalOpen, setIsLmModalOpen] = useState(false);
@@ -213,23 +214,29 @@ export default function App() {
         {/* Left / Center Work Area: Canvas + Orchestration Dock */}
         <div className="flex-1 flex flex-col relative overflow-hidden">
           {/* Main Visual Kanban Canvas (3D or 2D) */}
-          <div className="flex-1 relative">
-            {viewMode === '3D' ? (
-              <KanbanCanvas3D
-                tasks={tasks}
-                projects={projects}
-                selectedTask={selectedTask}
-                onSelectTask={handleSelectTask}
-              />
-            ) : (
-              <KanbanBoard2D
-                tasks={tasks}
-                projects={projects}
-                selectedTask={selectedTask}
-                onSelectTask={handleSelectTask}
-                onMoveTask={handleMoveTask}
-              />
-            )}
+          <div className="flex-1 relative overflow-hidden">
+            <ErrorBoundary
+              title="Board rendering paused. Click below to retry or switch view."
+              onSwitchTo2D={() => setViewMode('2D')}
+            >
+              {viewMode === '3D' ? (
+                <KanbanCanvas3D
+                  tasks={tasks}
+                  projects={projects}
+                  selectedTask={selectedTask}
+                  onSelectTask={handleSelectTask}
+                  onSwitchTo2D={() => setViewMode('2D')}
+                />
+              ) : (
+                <KanbanBoard2D
+                  tasks={tasks}
+                  projects={projects}
+                  selectedTask={selectedTask}
+                  onSelectTask={handleSelectTask}
+                  onMoveTask={handleMoveTask}
+                />
+              )}
+            </ErrorBoundary>
           </div>
 
           {/* Bottom Dock: Traffic Controller & Swarm Orchestrator */}
