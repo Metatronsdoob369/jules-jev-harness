@@ -14,7 +14,10 @@ import {
   Compass,
   CheckCircle2,
   Lock,
-  Cpu
+  Cpu,
+  ZoomIn,
+  ZoomOut,
+  Maximize2
 } from 'lucide-react';
 
 // ── Trace colors per agency sector (Metallic shimmer palette) ──
@@ -36,10 +39,10 @@ const CX = 700;
 const CY = 440;
 
 // Central Planar Disc Radius
-const DISC_R = 145;
+const DISC_R = 150;
 
 // Outer Endpoint Ring Radius
-const RING_R = 375;
+const RING_R = 380;
 
 // Outer Arc ranges (degrees, 0 = right 3 o'clock CW)
 const ARC_RANGES = {
@@ -53,10 +56,10 @@ const ARC_RANGES = {
 
 // 4 Join Key Micro-Chip Positions around planar disc
 const JOIN_CHIPS = [
-  { id: 'SPATIAL',   name: 'SPATIAL HUB',   keys: 'GEOID · FIPS · ZIP5',  x: 520, y: 280, color: '#38bdf8' },
-  { id: 'TEMPORAL',  name: 'TEMPORAL HUB',  keys: 'DATE · MONTH · QTR',   x: 880, y: 280, color: '#fbbf24' },
-  { id: 'COMMODITY', name: 'COMMODITY HUB', keys: 'NAICS · HS · CUSIP',   x: 880, y: 600, color: '#a855f7' },
-  { id: 'CORPORATE', name: 'CORPORATE HUB', keys: 'CIK · LEI · EIN',      x: 520, y: 600, color: '#34d399' },
+  { id: 'SPATIAL',   name: 'SPATIAL HUB',   keys: 'GEOID · FIPS · ZIP5',  x: 505, y: 270, color: '#38bdf8' },
+  { id: 'TEMPORAL',  name: 'TEMPORAL HUB',  keys: 'DATE · MONTH · QTR',   x: 895, y: 270, color: '#fbbf24' },
+  { id: 'COMMODITY', name: 'COMMODITY HUB', keys: 'NAICS · HS · CUSIP',   x: 895, y: 610, color: '#a855f7' },
+  { id: 'CORPORATE', name: 'CORPORATE HUB', keys: 'CIK · LEI · EIN',      x: 505, y: 610, color: '#34d399' },
 ];
 
 // Curated Endpoints per Agency (High-impact cross-agency macro endpoints)
@@ -112,7 +115,6 @@ const AGENCY_ENDPOINTS = {
 };
 
 // Target Reticles plotted on the Planar Sealed Earth Disc
-// Math: polar projection r = DISC_R * (90 - lat)/180, angle = lon * pi/180
 const SOVEREIGN_NODES = [
   { id: 'node_dc', name: 'DC Federal District', lat: 38.9072, lon: -77.0369, label: 'TREAS / BLS / SEC HQ', code: 'WDC_01' },
   { id: 'node_stl', name: 'St. Louis Federal Reserve', lat: 38.6270, lon: -90.1994, label: 'FRED REPO HUB', code: 'STL_08' },
@@ -121,14 +123,51 @@ const SOVEREIGN_NODES = [
   { id: 'node_chicago', name: 'Chicago Mercantile CBOT', lat: 41.8781, lon: -87.6298, label: 'COMMODITY FUTURES', code: 'CME_07' },
 ];
 
+// Polar Azimuthal Equidistant coordinate projection math
 function projectPlanar(lat, lon) {
-  // Polar Azimuthal Equidistant projection
   const r = DISC_R * ((90 - lat) / 180);
   const ang = (lon * Math.PI) / 180;
   return {
     x: CX + r * Math.sin(ang),
     y: CY - r * Math.cos(ang),
   };
+}
+
+// Polar Azimuthal Equidistant Continental Contours
+const CONTINENT_POLYS = [
+  // North America
+  [
+    [72, -155], [70, -125], [68, -90], [58, -60], [45, -62], [32, -78],
+    [26, -80], [20, -88], [15, -88], [18, -102], [28, -112], [36, -122],
+    [48, -124], [58, -135], [64, -165]
+  ],
+  // South America
+  [
+    [11, -74], [6, -52], [-4, -36], [-22, -41], [-35, -55], [-54, -68],
+    [-46, -75], [-18, -72], [-3, -80], [7, -77]
+  ],
+  // Eurasia
+  [
+    [71, 26], [74, 58], [75, 105], [70, 142], [61, 162], [46, 142],
+    [36, 130], [28, 120], [18, 108], [10, 99], [22, 80], [25, 62],
+    [12, 44], [30, 32], [41, 28], [54, 9], [62, 5], [70, 18]
+  ],
+  // Africa
+  [
+    [36, 0], [36, 11], [31, 32], [12, 50], [0, 42], [-24, 33],
+    [-34, 18], [-21, 12], [4, 3], [14, -17], [28, -10]
+  ],
+  // Australia
+  [
+    [-12, 131], [-14, 144], [-24, 152], [-37, 146], [-35, 117], [-22, 114], [-14, 126]
+  ]
+];
+
+function buildPolyPath(pts) {
+  return pts.map((pt, i) => {
+    const { x, y } = projectPlanar(pt[0], pt[1]);
+    return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ') + ' Z';
 }
 
 export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
@@ -138,15 +177,28 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
   const [selectedTarget, setSelectedTarget] = useState(AGENCY_ENDPOINTS.FRED[0]);
   const [isFirmamentActive, setIsFirmamentActive] = useState(true);
   const [rotAngle, setRotAngle] = useState(0);
+  const [packetPhase, setPacketPhase] = useState(0);
+  const [zoomMode, setZoomMode] = useState('fit'); // 'fit' | 'dome'
 
-  // Rotating holographic firmament ring animation
+  // Dynamic viewport transform for smooth zoom
+  const viewBoxStr = useMemo(() => {
+    if (zoomMode === 'dome') {
+      // Zoomed into the central planar disc
+      const size = DISC_R * 2.9;
+      return `${CX - size / 2} ${CY - size / 2} ${size} ${size}`;
+    }
+    return `0 0 ${W} ${H}`;
+  }, [zoomMode]);
+
+  // Rotating holographic firmament & signal packet animation loop
   useEffect(() => {
     let frameId;
-    const animateDome = () => {
-      setRotAngle((prev) => (prev + 0.15) % 360);
-      frameId = requestAnimationFrame(animateDome);
+    const animateLoop = () => {
+      setRotAngle((prev) => (prev + 0.12) % 360);
+      setPacketPhase((prev) => (prev + 0.008) % 1);
+      frameId = requestAnimationFrame(animateLoop);
     };
-    frameId = requestAnimationFrame(animateDome);
+    frameId = requestAnimationFrame(animateLoop);
     return () => cancelAnimationFrame(frameId);
   }, []);
 
@@ -183,7 +235,7 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
     const render = () => {
       time += 0.002;
       if (active) {
-        mx += (tx - mx) * 0.022; // smooth organic follow
+        mx += (tx - mx) * 0.022;
         my += (ty - my) * 0.022;
       }
 
@@ -202,8 +254,7 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
           const py = yi * sp + ny;
 
           const dc = Math.hypot(px - CX, py - CY);
-          // Hollow out center where planar disc sits
-          if (dc < DISC_R + 30) continue;
+          if (dc < DISC_R + 25) continue;
 
           const base = Math.max(0, 1 - dc / (Math.max(W, H) / 1.6)) * 0.15;
           const dm = Math.hypot(px - mx, py - my);
@@ -240,10 +291,8 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
         const rx = CX + RING_R * Math.cos(rad);
         const ry = CY + RING_R * Math.sin(rad);
 
-        // Find associated Join Chip
         const chip = JOIN_CHIPS.find((c) => c.id === ep.key) || JOIN_CHIPS[0];
 
-        // Cubic bezier control points: fan inward from ring to chip
         const pull = 120;
         const c1x = rx - Math.cos(rad) * pull;
         const c1y = ry - Math.sin(rad) * pull;
@@ -261,12 +310,21 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
           chipX: chip.x,
           chipY: chip.y,
           chipId: chip.id,
+          c1x, c1y, c2x, c2y,
           dPath,
         });
       });
     });
     return list;
   }, []);
+
+  // Compute animated packet point along active cubic-bezier curve
+  function getCubicPoint(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    const x = mt*mt*mt * p0.x + 3*mt*mt*t * p1.x + 3*mt*t*t * p2.x + t*t*t * p3.x;
+    const y = mt*mt*mt * p0.y + 3*mt*mt*t * p1.y + 3*mt*t*t * p2.y + t*t*t * p3.y;
+    return { x, y };
+  }
 
   const activeHypothesis = useMemo(() => {
     return {
@@ -293,21 +351,37 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
 
       {/* ── SVG Layer for PCB Traces, Vias & Planar Earth System ── */}
       <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="absolute inset-0 w-full h-full z-10 pointer-events-none"
+        viewBox={viewBoxStr}
+        className="absolute inset-0 w-full h-full z-10 transition-all duration-700 ease-out"
         preserveAspectRatio="xMidYMid meet"
       >
         <defs>
           {/* Radial Copper Gradient for Bezel */}
           <radialGradient id="bezelGrad" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#1e1810" />
-            <stop offset="70%" stopColor="#c88848" />
-            <stop offset="90%" stopColor="#e8b878" />
+            <stop offset="68%" stopColor="#c88848" />
+            <stop offset="88%" stopColor="#e8b878" />
             <stop offset="100%" stopColor="#3d2a14" />
           </radialGradient>
 
-          {/* Firmament Glow Filter */}
-          <filter id="cyanGlow" x="-20%" y="-20%" width="140%" height="140%">
+          {/* Deep Luminous Polar AE Ocean Surface */}
+          <radialGradient id="oceanGrad" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#0a192e" />
+            <stop offset="50%" stopColor="#061220" />
+            <stop offset="85%" stopColor="#020812" />
+            <stop offset="100%" stopColor="#02050b" />
+          </radialGradient>
+
+          {/* Firmament Crystal Dome Arc Gradient */}
+          <radialGradient id="domeGlowGrad" cx="50%" cy="35%" r="60%">
+            <stop offset="0%" stopColor="rgba(0, 229, 255, 0.20)" />
+            <stop offset="45%" stopColor="rgba(0, 180, 255, 0.08)" />
+            <stop offset="80%" stopColor="rgba(14, 165, 233, 0.02)" />
+            <stop offset="100%" stopColor="rgba(0, 0, 0, 0)" />
+          </radialGradient>
+
+          {/* Cyan Glow Filter */}
+          <filter id="cyanGlow" x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="3" result="blur" />
             <feMerge>
               <feMergeNode in="blur" />
@@ -315,8 +389,16 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
             </feMerge>
           </filter>
 
-          <filter id="copperGlow" x="-20%" y="-20%" width="140%" height="140%">
+          <filter id="copperGlow" x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="2.5" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+
+          <filter id="iceGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
             <feMerge>
               <feMergeNode in="blur" />
               <feMergeNode in="SourceGraphic" />
@@ -332,16 +414,39 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
             const sectorColor = SECTOR_COLORS[ep.sector].col;
 
             return (
-              <path
-                key={ep.id}
-                d={ep.dPath}
-                fill="none"
-                stroke={isSelected ? '#00f2fe' : isHovered ? '#ffaa44' : sectorColor}
-                strokeWidth={isSelected ? 2.5 : isHovered ? 2.0 : 0.85}
-                strokeOpacity={isSelected ? 1.0 : isHovered ? 0.9 : 0.25}
-                filter={isSelected || isHovered ? 'url(#copperGlow)' : undefined}
-                className="transition-all duration-200"
-              />
+              <g key={ep.id}>
+                <path
+                  d={ep.dPath}
+                  fill="none"
+                  stroke={isSelected ? '#00f2fe' : isHovered ? '#ffaa44' : sectorColor}
+                  strokeWidth={isSelected ? 2.5 : isHovered ? 2.0 : 0.85}
+                  strokeOpacity={isSelected ? 1.0 : isHovered ? 0.9 : 0.25}
+                  filter={isSelected || isHovered ? 'url(#copperGlow)' : undefined}
+                  className="transition-all duration-200"
+                />
+
+                {/* Animated Streaming Signal Packet along Selected Traces */}
+                {isSelected && (
+                  (() => {
+                    const pt = getCubicPoint(
+                      { x: ep.rx, y: ep.ry },
+                      { x: ep.c1x, y: ep.c1y },
+                      { x: ep.c2x, y: ep.c2y },
+                      { x: ep.chipX, y: ep.chipY },
+                      packetPhase
+                    );
+                    return (
+                      <circle
+                        cx={pt.x}
+                        cy={pt.y}
+                        r="3.5"
+                        fill="#00f2fe"
+                        filter="url(#cyanGlow)"
+                      />
+                    );
+                  })()
+                )}
+              </g>
             );
           })}
         </g>
@@ -427,7 +532,7 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
             x1={chip.x}
             y1={chip.y}
             x2={CX + (chip.x > CX ? DISC_R : -DISC_R)}
-            y2={CY + (chip.y > CY ? DISC_R * 0.6 : -DISC_R * 0.6)}
+            y2={CY + (chip.y > CY ? DISC_R * 0.5 : -DISC_R * 0.5)}
             stroke="#c88848"
             strokeWidth="1.2"
             strokeOpacity="0.45"
@@ -443,19 +548,19 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
           <circle
             cx={CX}
             cy={CY}
-            r={DISC_R + 12}
+            r={DISC_R + 14}
             fill="#0e1424"
             stroke="url(#bezelGrad)"
-            strokeWidth="7"
+            strokeWidth="8"
           />
 
-          {/* 360-Degree Radial Tick Marks */}
+          {/* 360-Degree Radial Azimuth Degree Tick Marks */}
           {Array.from({ length: 72 }).map((_, i) => {
             const deg = i * 5;
             const rad = (deg * Math.PI) / 180;
             const isMajor = deg % 30 === 0;
-            const len = isMajor ? 8 : 4;
-            const r1 = DISC_R + 6;
+            const len = isMajor ? 9 : 4.5;
+            const r1 = DISC_R + 7;
             const r2 = r1 - len;
             return (
               <line
@@ -465,84 +570,131 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
                 x2={CX + r2 * Math.cos(rad)}
                 y2={CY + r2 * Math.sin(rad)}
                 stroke="#d49e58"
-                strokeWidth={isMajor ? 1.2 : 0.6}
-                strokeOpacity={isMajor ? 0.9 : 0.4}
+                strokeWidth={isMajor ? 1.4 : 0.65}
+                strokeOpacity={isMajor ? 0.95 : 0.45}
               />
             );
           })}
 
-          {/* Outer Antarctica Ice Perimeter Wall (Hermetic Barrier) */}
+          {/* Cardinal Azimuth Bearings */}
+          {[
+            { l: '0° N', deg: 0 },
+            { l: '90° E', deg: 90 },
+            { l: '180° S', deg: 180 },
+            { l: '270° W', deg: 270 }
+          ].map((c) => {
+            const rad = (c.deg * Math.PI) / 180;
+            const tx = CX + (DISC_R + 22) * Math.sin(rad);
+            const ty = CY - (DISC_R + 22) * Math.cos(rad);
+            return (
+              <text
+                key={`cardinal-${c.l}`}
+                x={tx}
+                y={ty + 3}
+                textAnchor="middle"
+                className="text-[7.5px] font-mono font-bold tracking-widest"
+                fill="#fbbf24"
+                opacity="0.9"
+              >
+                {c.l}
+              </text>
+            );
+          })}
+
+          {/* Outer Antarctica Ice Perimeter Wall (Hermetic Containment Barrier) */}
           <circle
             cx={CX}
             cy={CY}
             r={DISC_R}
-            fill="#060c18"
-            stroke="#e2f8ff"
-            strokeWidth="3.5"
-            filter="url(#cyanGlow)"
+            fill="none"
+            stroke="#d8f4ff"
+            strokeWidth="4"
+            filter="url(#iceGlow)"
           />
-
-          {/* Ocean Radial Gradient Surface */}
           <circle
             cx={CX}
             cy={CY}
             r={DISC_R - 2}
-            fill="radial-gradient(circle, #0e1b2e 0%, #06111f 65%, #020710 100%)"
+            fill="none"
+            stroke="#38bdf8"
+            strokeWidth="1.5"
+            strokeOpacity="0.8"
           />
 
-          {/* Concentric Polar Latitude Coordinate Rings */}
-          {[25, 55, 85, 115].map((r, idx) => (
-            <circle
-              key={`lat-ring-${idx}`}
-              cx={CX}
-              cy={CY}
-              r={r}
-              fill="none"
-              stroke="#38bdf8"
-              strokeWidth="0.65"
-              strokeOpacity="0.28"
-              strokeDasharray={idx === 2 ? 'none' : '4 4'}
-            />
+          {/* Deep Ocean Surface with Radial Depth */}
+          <circle
+            cx={CX}
+            cy={CY}
+            r={DISC_R - 3}
+            fill="url(#oceanGrad)"
+          />
+
+          {/* Concentric Coordinate Latitude Rings (Tropic of Cancer, Equator, Tropic of Capricorn) */}
+          {[
+            { r: DISC_R * 0.13, label: '66.5° N ARCTIC' },
+            { r: DISC_R * 0.37, label: '23.5° N CANCER' },
+            { r: DISC_R * 0.50, label: '0° EQUATOR' },
+            { r: DISC_R * 0.63, label: '23.5° S CAPRICORN' },
+            { r: DISC_R * 0.82, label: '60° S SOUTHERN' },
+          ].map((lat, idx) => (
+            <g key={`lat-ring-${idx}`}>
+              <circle
+                cx={CX}
+                cy={CY}
+                r={lat.r}
+                fill="none"
+                stroke={idx === 2 ? '#fbbf24' : '#38bdf8'}
+                strokeWidth={idx === 2 ? '0.9' : '0.55'}
+                strokeOpacity={idx === 2 ? '0.45' : '0.25'}
+                strokeDasharray={idx === 2 ? 'none' : '4 3'}
+              />
+              <text
+                x={CX + 4}
+                y={CY - lat.r - 2}
+                className="text-[5.5px] font-mono"
+                fill={idx === 2 ? '#fbbf24' : '#38bdf8'}
+                opacity="0.4"
+              >
+                {lat.label}
+              </text>
+            </g>
           ))}
 
-          {/* Radial Longitude Meridian Spokes */}
-          {Array.from({ length: 12 }).map((_, i) => {
-            const rad = (i * 30 * Math.PI) / 180;
+          {/* Radial Longitude Meridian Spokes (15-Degree Increments) */}
+          {Array.from({ length: 24 }).map((_, i) => {
+            const rad = (i * 15 * Math.PI) / 180;
             return (
               <line
                 key={`meridian-${i}`}
                 x1={CX}
                 y1={CY}
-                x2={CX + DISC_R * Math.cos(rad)}
-                y2={CY + DISC_R * Math.sin(rad)}
+                x2={CX + (DISC_R - 3) * Math.cos(rad)}
+                y2={CY + (DISC_R - 3) * Math.sin(rad)}
                 stroke="#38bdf8"
-                strokeWidth="0.5"
-                strokeOpacity="0.22"
+                strokeWidth="0.45"
+                strokeOpacity={i % 6 === 0 ? '0.35' : '0.15'}
               />
             );
           })}
 
-          {/* Stylized Planar Landmass Contours (North Pole at Center) */}
-          {/* North America / Arctic basin */}
-          <path
-            d={`M ${CX - 22} ${CY - 30} Q ${CX - 55} ${CY - 50} ${CX - 75} ${CY - 20} Q ${CX - 85} ${CY + 25} ${CX - 50} ${CY + 55} Q ${CX - 25} ${CY + 35} ${CX - 22} ${CY - 30}`}
-            fill="#1e3a32"
-            fillOpacity="0.45"
-            stroke="#34d399"
-            strokeWidth="1"
-            strokeOpacity="0.6"
-          />
-          {/* Eurasia / Africa / Asia */}
-          <path
-            d={`M ${CX + 15} ${CY - 35} Q ${CX + 65} ${CY - 60} ${CX + 95} ${CY - 25} Q ${CX + 105} ${CY + 30} ${CX + 45} ${CY + 65} Q ${CX + 20} ${CY + 20} ${CX + 15} ${CY - 35}`}
-            fill="#1e3a32"
-            fillOpacity="0.45"
-            stroke="#34d399"
-            strokeWidth="1"
-            strokeOpacity="0.6"
-          />
-          {/* Arctic Center Node */}
+          {/* Real Geographical Continents (Polar Azimuthal Equidistant Projection) */}
+          <g id="polar-continents">
+            {CONTINENT_POLYS.map((poly, idx) => (
+              <path
+                key={`poly-${idx}`}
+                d={buildPolyPath(poly)}
+                fill="#16382f"
+                fillOpacity="0.65"
+                stroke="#34d399"
+                strokeWidth="0.9"
+                strokeOpacity="0.75"
+              />
+            ))}
+          </g>
+
+          {/* Center Polaris Anchor (North Pole Center Node) */}
           <circle cx={CX} cy={CY} r="3" fill="#ffffff" filter="url(#cyanGlow)" />
+          <circle cx={CX} cy={CY} r="6" fill="none" stroke="#00f2fe" strokeWidth="0.6" strokeOpacity="0.8" />
 
           {/* Sovereign Physical Nodes Reticles plotted on the Planar Disc */}
           {SOVEREIGN_NODES.map((node) => {
@@ -551,28 +703,39 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
               hoveredEndpoint?.tag === node.code || selectedSource?.tag === node.code;
 
             return (
-              <g key={node.id} transform={`translate(${pt.x}, ${pt.y})`}>
+              <g
+                key={node.id}
+                transform={`translate(${pt.x}, ${pt.y})`}
+                className="cursor-pointer pointer-events-auto"
+                onClick={() => {
+                  // Interactive target selection via planar reticle
+                  const match = Object.values(AGENCY_ENDPOINTS)
+                    .flat()
+                    .find((e) => e.key === 'SPATIAL' || e.tag.includes(node.code.slice(0, 3)));
+                  if (match) setSelectedTarget(match);
+                }}
+              >
                 <circle
-                  r={isTargeted ? '7' : '3.5'}
+                  r={isTargeted ? '7.5' : '4'}
                   fill={isTargeted ? '#00f2fe' : '#fbbf24'}
                   filter="url(#cyanGlow)"
                   className="transition-all duration-300"
                 />
                 <circle
-                  r={isTargeted ? '14' : '7'}
+                  r={isTargeted ? '16' : '8'}
                   fill="none"
                   stroke={isTargeted ? '#00f2fe' : '#fbbf24'}
-                  strokeWidth="0.8"
-                  strokeOpacity={isTargeted ? '0.9' : '0.4'}
+                  strokeWidth="0.85"
+                  strokeOpacity={isTargeted ? '0.95' : '0.4'}
                   className={isTargeted ? 'animate-ping' : ''}
                 />
                 {/* Node Code Label */}
                 <text
-                  x="8"
-                  y="3"
-                  className="text-[7px] font-mono font-bold"
+                  x="7"
+                  y="2.5"
+                  className="text-[6.5px] font-mono font-bold"
                   fill="#f8fafc"
-                  opacity="0.85"
+                  opacity="0.9"
                 >
                   {node.code}
                 </text>
@@ -580,32 +743,87 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
             );
           })}
 
-          {/* Rotating Holographic Firmament Geodesic Dome Overlay */}
+          {/* ── Crystalline Geodesic Firmament Dome & Celestial Vault ── */}
           {isFirmamentActive && (
-            <g
-              transform={`rotate(${rotAngle}, ${CX}, ${CY})`}
-              className="pointer-events-none opacity-40"
-            >
-              <ellipse
+            <g id="firmament-vault" className="pointer-events-none">
+              {/* Luminous Specular Dome Fill (Pure celestial vault - no inverted ground reflection) */}
+              <circle
                 cx={CX}
                 cy={CY}
-                rx={DISC_R - 8}
-                ry={DISC_R * 0.55}
-                fill="none"
-                stroke="#00f2fe"
-                strokeWidth="0.8"
-                strokeDasharray="6 4"
+                r={DISC_R - 3}
+                fill="url(#domeGlowGrad)"
               />
-              <ellipse
-                cx={CX}
-                cy={CY}
-                rx={DISC_R * 0.55}
-                ry={DISC_R - 8}
-                fill="none"
-                stroke="#00f2fe"
-                strokeWidth="0.8"
-                strokeDasharray="6 4"
-              />
+
+              {/* Rotating Geodesic Diamond & Triangular Struts */}
+              <g transform={`rotate(${rotAngle}, ${CX}, ${CY})`} className="opacity-40">
+                {/* Geodesic Hex Struts */}
+                {Array.from({ length: 6 }).map((_, i) => {
+                  const deg = i * 60;
+                  const rad = (deg * Math.PI) / 180;
+                  return (
+                    <line
+                      key={`hex-strut-${i}`}
+                      x1={CX + DISC_R * 0.45 * Math.cos(rad)}
+                      y1={CY + DISC_R * 0.45 * Math.sin(rad)}
+                      x2={CX + DISC_R * 0.88 * Math.cos(rad + Math.PI / 6)}
+                      y2={CY + DISC_R * 0.88 * Math.sin(rad + Math.PI / 6)}
+                      stroke="#00f2fe"
+                      strokeWidth="0.75"
+                    />
+                  );
+                })}
+
+                {/* Concentric Dome Arch Ribs */}
+                <ellipse
+                  cx={CX}
+                  cy={CY}
+                  rx={DISC_R * 0.92}
+                  ry={DISC_R * 0.52}
+                  fill="none"
+                  stroke="#00f2fe"
+                  strokeWidth="0.75"
+                  strokeDasharray="5 3"
+                />
+                <ellipse
+                  cx={CX}
+                  cy={CY}
+                  rx={DISC_R * 0.52}
+                  ry={DISC_R * 0.92}
+                  fill="none"
+                  stroke="#00f2fe"
+                  strokeWidth="0.75"
+                  strokeDasharray="5 3"
+                />
+              </g>
+
+              {/* Counter-Rotating Sun & Moon Celestial Orbit Track */}
+              <g transform={`rotate(${-rotAngle * 0.8}, ${CX}, ${CY})`} className="opacity-80">
+                <circle
+                  cx={CX}
+                  cy={CY}
+                  r={DISC_R * 0.50} // On Equator track
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth="0.6"
+                  strokeDasharray="2 6"
+                />
+                {/* Sun Luminary */}
+                <circle
+                  cx={CX + DISC_R * 0.50}
+                  cy={CY}
+                  r="3.5"
+                  fill="#fde047"
+                  filter="url(#cyanGlow)"
+                />
+                {/* Moon Luminary (180 deg opposite) */}
+                <circle
+                  cx={CX - DISC_R * 0.50}
+                  cy={CY}
+                  r="2.8"
+                  fill="#e2e8f0"
+                  filter="url(#cyanGlow)"
+                />
+              </g>
             </g>
           )}
 
@@ -624,7 +842,7 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
             x={CX}
             y={CY + DISC_R + 30}
             textAnchor="middle"
-            className="text-[8px] font-bold tracking-widest uppercase"
+            className="text-[8px] font-bold tracking-widest uppercase font-mono"
             fill="#c88848"
           >
             SEAL STATUS: HERMETIC // ENCLOSED
@@ -684,8 +902,33 @@ export default function DiscoveryJostleCanvas({ onDispatchTask, onClose }) {
           </div>
         </div>
 
-        {/* Header Controls */}
+        {/* Viewport Zoom & Firmament Header Controls */}
         <div className="flex items-center space-x-2 pointer-events-auto">
+          <div className="flex bg-canvas-deck p-0.5 rounded border border-white/10">
+            <button
+              onClick={() => setZoomMode('fit')}
+              className={`px-2.5 py-1 text-xs rounded font-bold transition-all flex items-center space-x-1 ${
+                zoomMode === 'fit'
+                  ? 'bg-optic-cyan text-canvas-deep shadow-[0_0_10px_rgba(0,229,255,0.3)]'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+              <span>MOTHERBOARD (1.0x)</span>
+            </button>
+            <button
+              onClick={() => setZoomMode('dome')}
+              className={`px-2.5 py-1 text-xs rounded font-bold transition-all flex items-center space-x-1 ${
+                zoomMode === 'dome'
+                  ? 'bg-amber-400 text-canvas-deep shadow-[0_0_10px_rgba(251,191,36,0.3)]'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+              <span>PLANAR DISC (2.3x)</span>
+            </button>
+          </div>
+
           <button
             onClick={() => setIsFirmamentActive(!isFirmamentActive)}
             className={`px-2.5 py-1 text-xs rounded border transition-colors flex items-center space-x-1 ${
