@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Cpu, Play, Pause, Zap, GitBranch, ShieldCheck, Check, X } from 'lucide-react';
+import { Cpu, Play, Pause, Zap, GitBranch, ShieldCheck, Check, X, ExternalLink } from 'lucide-react';
 import { executeGate, gateStatus } from '../gates/gates.js';
+import { computeLiveStep } from '../jules/live-step.js';
 
 const MODE_LABEL = { live: 'JEV LIVE', 'stand-in': 'JEV STAND-IN', offline: 'GATES OFFLINE' };
 const MODE_STYLE = {
@@ -22,12 +23,20 @@ export default function OrchestrationHub({
   setIsExecuting
 }) {
   const [mode, setMode] = useState(null);
+  const [julesMode, setJulesMode] = useState('simulated');
   const [logs, setLogs] = useState([]);
   const [lastGateVerdict, setLastGateVerdict] = useState(null);
-  const [approval, setApproval] = useState(null); // { tile, verdict, question }
+  const [approval, setApproval] = useState(null); // { tile, verdict, question, actionType, extra }
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDoneWhen, setNewTaskDoneWhen] = useState('');
   const busy = useRef(false);
+  const pollBusy = useRef(false);
+  const tasksRef = useRef(tasks);
+  const consecutiveErrorsRef = useRef({});
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
   // ── Talking to the gates ───────────────────────────────────────────────────
 
@@ -35,7 +44,7 @@ export default function OrchestrationHub({
     const project = projects.find((p) => p.id === tile.projectId);
     return {
       tile: { id: tile.id, title: tile.title, description: tile.description, subtasks: tile.subtasks },
-      project: project && { name: project.name, repo: project.repo },
+      project: project && { name: project.name, repo: project.repo, branch: project.branch },
       projects: projects.map((p) => ({ name: p.name })),
       ...extra
     };
@@ -60,14 +69,13 @@ export default function OrchestrationHub({
     setLogs((prev) => [entry, ...prev].slice(0, 30));
   }
 
-  // A verdict that isn't "act" waits for you.
   function hold(tile, v) {
     onPatchTask(tile.id, { needsYou: v.reason });
   }
 
-  function ask(tile, v, question) {
+  function ask(tile, verdict, question, extra = {}) {
     onPatchTask(tile.id, { needsYou: question });
-    setApproval({ tile, verdict: v, question });
+    setApproval({ tile, verdict, question, ...extra });
     setIsExecuting(false);
   }
 
@@ -75,7 +83,7 @@ export default function OrchestrationHub({
   useEffect(() => {
     gateStatus().then((status) => {
       setMode(status.mode);
-      if (announced.current) return; // React dev mode runs effects twice
+      if (announced.current) return;
       announced.current = true;
       log(
         'note',
@@ -84,9 +92,20 @@ export default function OrchestrationHub({
           : `Gates ready (${MODE_LABEL[status.mode]}).`
       );
     });
+
+    // Check Jules mode
+    fetch('/api/jules')
+      .then((res) => (res.ok ? res.json() : { mode: 'simulated' }))
+      .then((data) => {
+        setJulesMode(data.mode || 'simulated');
+        if (data.mode === 'live') {
+          log('note', `Jules ready (LIVE · ${data.repos?.length ?? 0} connected repos).`);
+        }
+      })
+      .catch(() => setJulesMode('simulated'));
   }, []);
 
-  // ── The loop: simulated agents do the work, the gates judge every moment ──
+  // ── Dispatch Loop (BACKLOG -> IN_PROGRESS via route gate) ───────────────────
 
   useEffect(() => {
     if (!isExecuting || approval) return;
@@ -95,12 +114,16 @@ export default function OrchestrationHub({
       if (busy.current) return;
       busy.current = true;
       try {
-        const working = tasks.filter((t) => t.column === 'IN_PROGRESS' && !t.needsYou);
-        if (working.length > 0) {
-          await advance(working[Math.floor(Math.random() * working.length)]);
+        // Run simulated tiles only when simulated
+        const workingSimulated = tasksRef.current.filter(
+          (t) => t.column === 'IN_PROGRESS' && !t.needsYou && t.assignee !== 'Jules'
+        );
+        if (workingSimulated.length > 0) {
+          await advanceSimulated(workingSimulated[Math.floor(Math.random() * workingSimulated.length)]);
           return;
         }
-        const next = tasks.find((t) => t.column === 'BACKLOG' && !t.needsYou);
+
+        const next = tasksRef.current.find((t) => t.column === 'BACKLOG' && !t.needsYou);
         if (next) await dispatch(next);
       } finally {
         busy.current = false;
@@ -108,35 +131,183 @@ export default function OrchestrationHub({
     }, 2800);
 
     return () => clearInterval(interval);
-  }, [isExecuting, approval, tasks, projects]);
+  }, [isExecuting, approval, projects]);
 
-  // BACKLOG → IN_PROGRESS goes through the route gate.
+  // ── Live Jules Polling Loop (10-second timer, debounced) ────────────────────
+
+  useEffect(() => {
+    if (!isExecuting || julesMode !== 'live' || approval) return;
+
+    const pollTimer = setInterval(async () => {
+      if (pollBusy.current) return;
+      pollBusy.current = true;
+      try {
+        const liveTasks = tasksRef.current.filter(
+          (t) => t.column === 'IN_PROGRESS' && t.sessionId && t.assignee === 'Jules'
+        );
+        for (const tile of liveTasks) {
+          await pollJulesTask(tile);
+        }
+      } finally {
+        pollBusy.current = false;
+      }
+    }, 10000);
+
+    return () => clearInterval(pollTimer);
+  }, [isExecuting, julesMode, approval]);
+
+  async function pollJulesTask(tile) {
+    if (!tile.sessionId) return;
+    try {
+      const res = await fetch(`/api/jules/${tile.sessionId}`);
+      if (!res.ok) {
+        throw new Error(`Session poll failed (${res.status})`);
+      }
+      consecutiveErrorsRef.current[tile.id] = 0;
+      const sView = await res.json();
+
+      onUpdateTaskProgress(tile.id, sView.progress);
+      onPatchTask(tile.id, {
+        plan: sView.plan,
+        lastStep: sView.lastStep,
+        report: sView.report,
+      });
+
+      // Gates evaluation based on session state
+      let windowGateVerdict = null;
+      let doneGateVerdict = null;
+      let riskyGateVerdict = null;
+
+      if (sView.state === 'IN_PROGRESS' && tile.checkpointActive && sView.lastStep) {
+        windowGateVerdict = await gate('window', tile, {
+          atWindow: true,
+          lastStep: sView.lastStep.title,
+        });
+      }
+
+      if (sView.state === 'COMPLETED') {
+        doneGateVerdict = await gate('done', tile, { report: sView.report });
+        if (doneGateVerdict.action === 'done') {
+          riskyGateVerdict = await gate('risky', tile, {
+            pending: { kind: 'merge', detail: `Merge ${sView.report?.prUrl || ''}` },
+          });
+        }
+      }
+
+      const step = computeLiveStep({
+        tile,
+        sessionView: sView,
+        windowGateVerdict,
+        doneGateVerdict,
+        riskyGateVerdict,
+      });
+
+      if (step.type === 'ask_plan') {
+        ask(tile, { gate: 'jules_plan', action: 'approve' }, step.question, { askedFor: step.askedFor });
+      } else if (step.type === 'needs_feedback') {
+        onPatchTask(tile.id, { needsYou: step.message, askedFor: step.askedFor });
+      } else if (step.type === 'ask_window_open') {
+        ask(tile, { gate: 'window_open', action: 'open', sessionUrl: step.sessionUrl }, step.question, {
+          askedFor: step.askedFor,
+        });
+      } else if (step.type === 'ask_done') {
+        ask(tile, { gate: 'done_confirm', action: 'done' }, step.question, { askedFor: step.askedFor });
+      } else if (step.type === 'ask_send_back') {
+        ask(
+          tile,
+          { gate: 'done_send_back', action: 'send_back', missingItems: step.missingItems },
+          step.question,
+          { askedFor: step.askedFor }
+        );
+      } else if (step.type === 'ask_open_pr') {
+        ask(tile, { gate: 'risky_open_pr', action: 'run', prUrl: step.prUrl }, step.question, {
+          askedFor: step.askedFor,
+        });
+      } else if (step.type === 'flag') {
+        onPatchTask(tile.id, { needsYou: step.reason, askedFor: step.askedFor });
+      } else if (step.type === 'clear_needs_you') {
+        onPatchTask(tile.id, { needsYou: null });
+      }
+    } catch (err) {
+      const errCount = (consecutiveErrorsRef.current[tile.id] || 0) + 1;
+      consecutiveErrorsRef.current[tile.id] = errCount;
+      if (errCount >= 2) {
+        onPatchTask(tile.id, {
+          needsYou: `Jules API poll error: ${err instanceof Error ? err.message : 'Connection failed'}`,
+        });
+      }
+    }
+  }
+
+  // ── Dispatch: Route Gate Routing ───────────────────────────────────────────
+
   async function dispatch(tile) {
     const v = await gate('route', tile);
-    const takes = v.action === 'jules' || v.action === 'writer';
-    if (takes && v.verdict === 'act') return start(tile, v.action);
-    if (takes && v.verdict === 'confirm') return ask(tile, v, `Send ${tile.id} to ${v.action}?`);
-    hold(tile, v); // a person, a split, or no repo: it waits for you in the backlog
+    const isJulesRoute = v.action === 'jules';
+    const isWriterRoute = v.action === 'writer';
+
+    if (isJulesRoute) {
+      if (julesMode === 'live') {
+        // In live mode, every real dispatch asks the person first
+        return ask(tile, v, `Start a Jules session for ${tile.id}?`, { actionType: 'jules_dispatch' });
+      }
+      if (v.verdict === 'act') return start(tile, 'jules');
+      if (v.verdict === 'confirm') return ask(tile, v, `Send ${tile.id} to Jules?`, { actionType: 'route' });
+    }
+
+    if (isWriterRoute) {
+      if (v.verdict === 'act') return start(tile, 'writer');
+      if (v.verdict === 'confirm') return ask(tile, v, `Send ${tile.id} to writer?`, { actionType: 'route' });
+    }
+
+    hold(tile, v);
   }
 
   function start(tile, owner) {
-    onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules' : 'Writer model' });
+    onPatchTask(tile.id, { assignee: owner === 'jules' ? 'Jules (simulated)' : 'Writer model (simulated)' });
     onMoveTask(tile.id, 'IN_PROGRESS');
   }
 
-  async function advance(tile) {
+  async function startRealJules(tile) {
+    const project = projects.find((p) => p.id === tile.projectId);
+    try {
+      const res = await fetch('/api/jules/dispatch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tile, project }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Dispatch error (${res.status})`);
+      }
+      const data = await res.json();
+      onPatchTask(tile.id, {
+        sessionId: data.sessionId,
+        sessionUrl: data.url,
+        assignee: 'Jules',
+        needsYou: null,
+      });
+      onMoveTask(tile.id, 'IN_PROGRESS');
+      log('act', `Jules session started for ${tile.id}: ${data.url}`);
+    } catch (err) {
+      onPatchTask(tile.id, { needsYou: err instanceof Error ? err.message : 'Dispatch failed' });
+    }
+  }
+
+  // ── Simulated Tile Progression ─────────────────────────────────────────────
+
+  async function advanceSimulated(tile) {
     const steps = Math.max(1, tile.subtasks?.length ?? 1);
     const from = tile.progress ?? 0;
     const to = Math.min(100, from + 10 + Math.floor(Math.random() * 20));
     const finished = (p) => Math.floor((p / 100) * steps);
     onUpdateTaskProgress(tile.id, to);
 
-    // Finishing a plan step opens a window, if this tile has checkpoints.
     if (tile.checkpointActive && to < 100 && finished(to) > finished(from)) {
       const step = tile.subtasks[finished(to) - 1];
       const v = await gate('window', tile, { atWindow: true, lastStep: `Finished: ${step}` });
       if (v.action === 'open' && v.verdict !== 'escalate') {
-        return ask(tile, v, `Bring in a ${v.details?.role ?? 'reviewer'} on ${tile.id} now?`);
+        return ask(tile, v, `Bring in a ${v.details?.role ?? 'reviewer'} on ${tile.id} now?`, { actionType: 'window' });
       }
       if (v.verdict === 'escalate') hold(tile, v);
       return;
@@ -145,12 +316,12 @@ export default function OrchestrationHub({
     if (to >= 100) {
       const report = {
         summary: `Completed: ${(tile.subtasks ?? []).join('; ')}.`,
-        prUrl: `sim://${tile.id}`, // simulated agents open simulated PRs
-        testsPassed: true
+        prUrl: `sim://${tile.id}`,
+        testsPassed: true,
       };
       const v = await gate('done', tile, { report });
       if (v.action === 'done' && v.verdict === 'act') return onMoveTask(tile.id, 'REVIEW');
-      if (v.action === 'done' && v.verdict === 'confirm') return ask(tile, v, `Mark ${tile.id} done?`);
+      if (v.action === 'done' && v.verdict === 'confirm') return ask(tile, v, `Mark ${tile.id} done?`, { actionType: 'done' });
       if (v.action === 'send_back' && v.verdict === 'act') return sendBack(tile);
       hold(tile, v);
     }
@@ -161,29 +332,74 @@ export default function OrchestrationHub({
     onUpdateTaskProgress(tile.id, Math.round((100 * (steps - 1)) / steps));
   }
 
-  // Your yes or no on a "confirm" verdict.
-  function answer(yes) {
-    const { tile, verdict } = approval;
-    onPatchTask(tile.id, { needsYou: null });
-    if (verdict.gate === 'route') {
+  // ── Human Answer Resolution ────────────────────────────────────────────────
+
+  async function answer(yes) {
+    const { tile, verdict, actionType, askedFor } = approval;
+    onPatchTask(tile.id, { needsYou: null, askedFor });
+
+    if (actionType === 'jules_dispatch') {
+      if (yes) {
+        await startRealJules(tile);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Jules dispatch declined' });
+      }
+    } else if (verdict.gate === 'jules_plan') {
+      if (yes) {
+        await fetch(`/api/jules/${tile.sessionId}/approve`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+        log('act', `Approved plan for ${tile.id}`);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Plan rejected - enter feedback in drawer' });
+      }
+    } else if (verdict.gate === 'window_open') {
+      if (yes && verdict.sessionUrl) {
+        window.open(verdict.sessionUrl, '_blank');
+      }
+    } else if (verdict.gate === 'done_confirm') {
+      if (yes) {
+        onMoveTask(tile.id, 'REVIEW');
+      } else {
+        sendBack(tile);
+      }
+    } else if (verdict.gate === 'done_send_back') {
+      if (yes && tile.sessionId) {
+        await fetch(`/api/jules/${tile.sessionId}/message`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ prompt: `Please finish: ${verdict.missingItems || 'remaining items'}` }),
+        });
+        log('act', `Requested Jules to finish missing items for ${tile.id}`);
+      } else {
+        onPatchTask(tile.id, { needsYou: 'Returned to backlog' });
+      }
+    } else if (verdict.gate === 'risky_open_pr') {
+      if (yes) {
+        if (verdict.prUrl) window.open(verdict.prUrl, '_blank');
+        onMoveTask(tile.id, 'REVIEW');
+      } else {
+        onPatchTask(tile.id, { needsYou: 'PR open declined' });
+      }
+    } else if (verdict.gate === 'route') {
       if (yes) start(tile, verdict.action);
       else onPatchTask(tile.id, { needsYou: 'Routing declined: assign it by hand' });
-    }
-    if (verdict.gate === 'window') {
+    } else if (verdict.gate === 'window') {
       const role = verdict.details?.role ?? 'reviewer';
-      log('note', yes
-        ? `Window on ${tile.id}: a ${role} joins (pick the model in LM settings).`
-        : `Window on ${tile.id}: kept going without another model.`);
-    }
-    if (verdict.gate === 'done') {
+      log('note', yes ? `Window on ${tile.id}: a ${role} joins.` : `Window on ${tile.id}: kept going.`);
+    } else if (verdict.gate === 'done') {
       if (yes) onMoveTask(tile.id, 'REVIEW');
       else sendBack(tile);
     }
+
     setApproval(null);
     setIsExecuting(true);
   }
 
-  // New tasks go through the intake gate, which also picks their project.
+  // ── Quick Task Creation via Intake Gate ────────────────────────────────────
+
   const handleCreateQuickTask = async (e) => {
     e.preventDefault();
     const title = newTaskTitle.trim();
@@ -201,7 +417,7 @@ export default function OrchestrationHub({
       avgThroughputTps: 0,
       subtasks: doneWhen ? [doneWhen] : [title],
       checkpointActive: true,
-      description: doneWhen ? `${title}. Done when: ${doneWhen}` : title
+      description: doneWhen ? `${title}. Done when: ${doneWhen}` : title,
     };
     setNewTaskTitle('');
     setNewTaskDoneWhen('');
@@ -235,6 +451,15 @@ export default function OrchestrationHub({
               {MODE_LABEL[mode]}
             </span>
           )}
+          <span
+            className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${
+              julesMode === 'live'
+                ? 'text-wal-emerald border-wal-emerald/40 bg-wal-emerald/10'
+                : 'text-slate-400 border-slate-600 bg-slate-800/40'
+            }`}
+          >
+            JULES: {julesMode.toUpperCase()}
+          </span>
         </div>
 
         <button
@@ -258,7 +483,9 @@ export default function OrchestrationHub({
             <ShieldCheck className="w-4 h-4 text-optic-cyan" />
             <span className="font-bold text-slate-100">YOUR CALL:</span>
             <span className="text-slate-200">{approval.question}</span>
-            <span className="text-slate-400 text-[10px]">({approval.verdict.reason})</span>
+            {approval.verdict?.reason && (
+              <span className="text-slate-400 text-[10px]">({approval.verdict.reason})</span>
+            )}
           </div>
           <div className="flex items-center space-x-1.5">
             <button
@@ -291,10 +518,22 @@ export default function OrchestrationHub({
             </div>
 
             <div className="flex items-center space-x-3 text-[11px]">
-              <span>SURENESS: <strong className="text-optic-cyan">{lastGateVerdict.sureness}</strong></span>
-              <span>VERDICT: <strong className={lastGateVerdict.verdict === 'act' ? 'text-wal-emerald' : 'text-drift-amber'}>{lastGateVerdict.verdict.toUpperCase()}</strong></span>
+              <span>
+                SURENESS: <strong className="text-optic-cyan">{lastGateVerdict.sureness}</strong>
+              </span>
+              <span>
+                VERDICT:{' '}
+                <strong
+                  className={lastGateVerdict.verdict === 'act' ? 'text-wal-emerald' : 'text-drift-amber'}
+                >
+                  {lastGateVerdict.verdict.toUpperCase()}
+                </strong>
+              </span>
               <span className="text-slate-500">
-                {lastGateVerdict.source === 'jev' && lastGateVerdict.mode === 'stand-in' ? 'stand-in' : lastGateVerdict.source} · {lastGateVerdict.ms}ms
+                {lastGateVerdict.source === 'jev' && lastGateVerdict.mode === 'stand-in'
+                  ? 'stand-in'
+                  : lastGateVerdict.source}{' '}
+                · {lastGateVerdict.ms}ms
               </span>
             </div>
           </>
@@ -310,7 +549,9 @@ export default function OrchestrationHub({
             <div className="text-[10px] text-slate-400">PRIMARY CODE ENGINEER</div>
             <div className="text-optic-cyan font-bold flex items-center space-x-1">
               <span>JULES</span>
-              <span className="text-[9px] px-1 bg-optic-cyan/20 rounded">SIMULATED RUNS</span>
+              <span className="text-[9px] px-1 bg-optic-cyan/20 rounded">
+                {julesMode === 'live' ? 'REAL SESSIONS' : 'SIMULATED RUNS'}
+              </span>
             </div>
           </div>
           <Zap className="w-4 h-4 text-optic-cyan" />
