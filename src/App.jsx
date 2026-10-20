@@ -15,6 +15,7 @@ import ChatDrawer from './components/ChatDrawer';
 import SketchCanvasModal from './components/SketchCanvasModal';
 import ResearchBrowserModal from './components/ResearchBrowserModal';
 import DiscoveryGraphModal from './components/DiscoveryGraphModal';
+import CrisTransferAgentModal from './components/CrisTransferAgentModal';
 import ErrorBoundary from './components/ErrorBoundary';
 
 import {
@@ -30,7 +31,8 @@ import {
   LayoutGrid,
   Shield,
   Activity,
-  Network
+  Network,
+  Building2
 } from 'lucide-react';
 
 export default function App() {
@@ -68,6 +70,7 @@ export default function App() {
   const [isSketchOpen, setIsSketchOpen] = useState(false);
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [isDiscoveryOpen, setIsDiscoveryOpen] = useState(false);
+  const [isReconcileOpen, setIsReconcileOpen] = useState(false);
   const [apiKeys, setApiKeys] = useState({});
 
   // Handlers
@@ -247,6 +250,15 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setIsReconcileOpen(true)}
+            className="px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/40 hover:border-amber-400 text-amber-300 hover:text-white flex items-center space-x-1.5 font-bold transition-all shadow-[0_0_12px_rgba(245,158,11,0.25)]"
+            title="Reconcile CRIS Utility Address to Federal GEOID & SEC Form TA-1 Transfer Agent"
+          >
+            <Building2 className="w-3.5 h-3.5 text-amber-400" />
+            <span>RECONCILE (CRIS ➔ SEC)</span>
+          </button>
+
+          <button
             onClick={() => setIsChatOpen(!isChatOpen)}
             className={`px-2.5 py-1 rounded flex items-center space-x-1.5 font-bold border transition-all ${
               isChatOpen
@@ -363,6 +375,12 @@ export default function App() {
         isOpen={isDiscoveryOpen}
         onClose={() => setIsDiscoveryOpen(false)}
         onDispatchTask={handleDispatchDiscoveryTask}
+      />
+
+      <CrisTransferAgentModal
+        isOpen={isReconcileOpen}
+        onClose={() => setIsReconcileOpen(false)}
+        onAddTask={handleAddTask}
       />
     </div>
   );
