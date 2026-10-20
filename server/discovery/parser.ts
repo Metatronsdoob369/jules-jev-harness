@@ -104,6 +104,13 @@ export const CANONICAL_JOIN_KEYS: JoinKeyDefinition[] = [
     dataType: "string",
     regexPattern: "^[A-Z0-9]{9}$",
   },
+  {
+    id: "FINANCIAL_FINS",
+    canonicalName: "DTCC FINS Number",
+    description: "6-digit Financial Industry Number Standard assigned to registered transfer agents",
+    dataType: "string",
+    regexPattern: "^[0-9]{6}$",
+  },
 ];
 
 export const CANONICAL_CROSSWALKS: CrosswalkEdge[] = [
@@ -154,6 +161,14 @@ export const CANONICAL_CROSSWALKS: CrosswalkEdge[] = [
     name: "US Census TIGER Reverse Geocoder",
     confidence: 0.99,
     transformationFn: "census_tiger_coords_to_tract",
+  },
+  {
+    id: "crosswalk_geoid_to_ta1_fins",
+    fromKey: "SPATIAL_GEOID",
+    toKey: "FINANCIAL_FINS",
+    name: "Census Tract GEOID to SEC Transfer Agent FINS Crosswalk",
+    confidence: 0.95,
+    transformationFn: "census_tract_sec_ta1_fins_join",
   },
 ];
 
@@ -223,6 +238,28 @@ export const FOUNDATIONAL_ENDPOINTS: EndpointNode[] = [
     acceptsKeys: ["SPATIAL_GEOID", "TEMPORAL_DATE"],
     documentation: "Cloud Search enterprise discovery index over structured entity repositories",
     isNoKeyNeeded: false,
+  },
+  {
+    id: "census_geocoder_oneline",
+    name: "U.S. Census Geocoder REST API",
+    agency: "Bureau of the Census",
+    url: "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress",
+    domain: "real_estate",
+    emitsKeys: ["SPATIAL_GEOID", "SPATIAL_ZIP5", "SPATIAL_COORDINATES"],
+    acceptsKeys: ["SPATIAL_ZIP5"],
+    documentation: "Resolves raw CRIS utility addresses to 11-digit Federal Census Tract GEOIDs",
+    isNoKeyNeeded: true,
+  },
+  {
+    id: "sec_edgar_ta1_transfer_agents",
+    name: "SEC EDGAR Form TA-1 Transfer Agent Registrations",
+    agency: "Securities and Exchange Commission",
+    url: "https://www.sec.gov/data-research/sec-markets-data/transfer-agent-dataset",
+    domain: "corporate",
+    emitsKeys: ["FINANCIAL_FINS", "CORPORATE_CIK", "SPATIAL_ZIP5", "SPATIAL_GEOID"],
+    acceptsKeys: ["SPATIAL_GEOID", "SPATIAL_ZIP5"],
+    documentation: "Form TA-1 registrant master ledger, TA1_ADDRESS, TA-W successor custodians, and Rule 17Ad-17 lost securityholder search records",
+    isNoKeyNeeded: true,
   },
 ];
 

@@ -12,7 +12,8 @@ export type JoinKeyType =
   | "INDUSTRY_NAICS"
   | "AGRICULTURE_COMMODITY"
   | "GOV_AWARD_ID"
-  | "FINANCIAL_CUSIP";
+  | "FINANCIAL_CUSIP"
+  | "FINANCIAL_FINS";
 
 export interface JoinKeyDefinition {
   id: JoinKeyType;

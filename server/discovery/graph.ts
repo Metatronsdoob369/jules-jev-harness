@@ -162,6 +162,7 @@ export class DiscoveryGraph {
     for (let i = 0; i < endpointList.length; i++) {
       const src = endpointList[i];
       if (!src) continue;
+      let srcCount = 0;
 
       for (let j = i + 1; j < endpointList.length; j++) {
         const dst = endpointList[j];
@@ -182,7 +183,9 @@ export class DiscoveryGraph {
         if (
           (src.domain === "credit" && dst.domain === "real_estate") ||
           (src.domain === "macro" && dst.domain === "corporate") ||
-          (src.domain === "procurement" && dst.domain === "corporate")
+          (src.domain === "procurement" && dst.domain === "corporate") ||
+          (src.domain === "real_estate" && dst.domain === "corporate") ||
+          (src.domain === "corporate" && dst.domain === "real_estate")
         ) {
           domainBonus = 1.6;
         }
@@ -210,9 +213,10 @@ export class DiscoveryGraph {
           confidenceScore: Math.min(1.0, confidence),
         });
 
-        if (candidates.length >= maxLimit * 2) break;
+        srcCount++;
+        if (srcCount >= 2) break;
       }
-      if (candidates.length >= maxLimit * 2) break;
+      if (candidates.length >= maxLimit * 3) break;
     }
 
     // Sort by confidence score descending

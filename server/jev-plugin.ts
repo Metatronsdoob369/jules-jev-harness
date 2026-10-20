@@ -181,6 +181,32 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
           return send(res, 404, { error: "Hypothesis not found in active catalog." });
         }
 
+        const isCrisTa1Join =
+          hyp.sourceEndpoint.id === "census_geocoder_oneline" ||
+          hyp.targetEndpoint.id === "sec_edgar_ta1_transfer_agents" ||
+          hyp.sourceEndpoint.id === "sec_edgar_ta1_transfer_agents" ||
+          hyp.targetEndpoint.id === "census_geocoder_oneline";
+
+        const subtasks = isCrisTa1Join
+          ? [
+              "Query U.S. Census Geocoder API for 11-digit Federal GEOID (verify test: 3501 Clayton Place, Vestavia, AL 35216 -> 01073012902)",
+              "Execute relational join against TA1_ADDRESS.tsv and TA1_REGISTRANT.tsv on ACCESSION_NUMBER to extract DTCC FINS & legal custodian",
+              "Execute lineage audit against Form TA-W successor custodians and verify Rule 17Ad-17 lost-securityholder database search dates (TA2_DB_SEARCH)",
+              "Assert zero false positives on non-test commands and output reproducible test suite",
+            ]
+          : [
+              `Ingest test slices from ${hyp.sourceEndpoint.name} and ${hyp.targetEndpoint.name}`,
+              `Align time-series on join axis [${hyp.joinPath.fromKey}${
+                hyp.joinPath.viaCrosswalk ? ` -> ${hyp.joinPath.toKey}` : ""
+              }]`,
+              `Calculate Pearson/Spearman r and p-value assertion (p <= 0.01)`,
+              `Generate reproducible backtest report in reports/`,
+            ];
+
+        const brief = isCrisTa1Join
+          ? `CRIS Utility Address to Census GEOID to SEC Form TA-1 Transfer Agent Reconciliation Pipeline:\n1. Resolve physical CRIS utility billing records (e.g. 3501 Clayton Place, Vestavia, AL) to 11-digit Federal Census Tract GEOID (01073012902) via Census Geocoder REST API.\n2. Filter SEC EDGAR TA1_ADDRESS.tsv on ZIP/City/State to isolate ACCESSION_NUMBER.\n3. Query TA1_REGISTRANT.tsv to extract registered Transfer Agent legal name and DTCC FINS number.\n4. Audit Form TA-W successors and verify Form TA-2 DATABASESEARCHDATE under SEC Rule 17Ad-17.`
+          : `${hyp.rationale}\n\nGround Truth: Test statistical significance of lead-indicator shift (Lead: ${hyp.estimatedLeadTimeDays} days). P-value must satisfy p <= 0.01.`;
+
         const candidateTask = {
           id: `TSK-${Math.floor(400 + Math.random() * 99)}`,
           title: hyp.title,
@@ -194,24 +220,11 @@ export function jevGates(env: Record<string, string>, options: JevGatesOptions =
           tokensUsed: 14500,
           actualTimeMinutes: 0,
           avgThroughputTps: 110,
-          subtasks: [
-            `Ingest test slices from ${hyp.sourceEndpoint.name} and ${hyp.targetEndpoint.name}`,
-            `Align time-series on join axis [${hyp.joinPath.fromKey}${
-              hyp.joinPath.viaCrosswalk ? ` -> ${hyp.joinPath.toKey}` : ""
-            }]`,
-            `Calculate Pearson/Spearman r (assertion p <= 0.01)`
-          ],
+          subtasks,
           repo: "Metatronsdoob369/jules-jev-harness",
           branch: `exp/${hyp.id.replace(/[^a-z0-9_-]/g, "_")}`,
-          brief: `${hyp.rationale}\n\nGround Truth: Test statistical significance of lead-indicator shift (Lead: ${hyp.estimatedLeadTimeDays} days). P-value must satisfy p <= 0.01.`,
-          acceptanceCriteria: [
-            `Ingest test slices from ${hyp.sourceEndpoint.name} and ${hyp.targetEndpoint.name}`,
-            `Align time-series on join axis [${hyp.joinPath.fromKey}${
-              hyp.joinPath.viaCrosswalk ? ` -> ${hyp.joinPath.toKey}` : ""
-            }]`,
-            `Calculate Pearson/Spearman r and p-value assertion (p <= 0.01)`,
-            `Generate reproducible backtest report in reports/`,
-          ],
+          brief,
+          acceptanceCriteria: subtasks,
           pending: {
             diff: `# Discovery Ingestion Adapter: ${hyp.sourceEndpoint.name} + ${hyp.targetEndpoint.name}\nimport { queryFiscalData } from "us-gov-open-data-mcp/sdk/treasury";\n// Join on: ${hyp.joinPath.fromKey}\nexport async function runBacktest() { /* statistical assertions */ }`,
             baseline: `# Baseline Discovery Adapter\nexport async function runBacktest() { return { pValue: 1.0 }; }`,
